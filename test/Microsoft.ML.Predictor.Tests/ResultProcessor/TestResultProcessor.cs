@@ -2,20 +2,20 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using System.IO;
 using System.Collections.Generic;
+using System.IO;
 using System.Reflection;
-using Xunit.Abstractions;
 using Xunit;
+using Xunit.Abstractions;
 
-namespace Microsoft.ML.Runtime.RunTests
+namespace Microsoft.ML.RunTests
 {
     // REVIEW: The data files need to be ported. Are these tests even needed?
     public sealed class TestResultProcessor : BaseTestPredictors
     {
         public static StreamWriter OutFile;
         public const string SubDirectory = "ResultProcessor";
-        private const string TestDataPrefix = "Microsoft.ML.Runtime.RunTests.ResultProcessor.TestData.";
+        private const string TestDataPrefix = "Microsoft.ML.RunTests.ResultProcessor.TestData.";
         private const string TestDataOutPath = @"ResultProcessor\TestData";
 
         public TestResultProcessor(ITestOutputHelper helper) : base(helper)
@@ -107,12 +107,12 @@ namespace Microsoft.ML.Runtime.RunTests
         ///</summary>
         [Fact(Skip = "Need CoreTLC specific baseline update")]
         [TestCategory("Results Processor")]
-        public void RPMultiClassifierTest()
+        public void RPMulticlassifierTest()
         {
             List<string> testFiles = new List<string>();
             for (int i = 0; i < 21; i++)
             {
-                testFiles.Add("MultiClassifier." + i.ToString() + ".out.txt");
+                testFiles.Add("Multiclassifier." + i.ToString() + ".out.txt");
             }
 
             RunTestCore("RPMultiClassifierTest",

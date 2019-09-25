@@ -3,15 +3,15 @@
 // See the LICENSE file in the project root for more information.
 
 using System;
+using Microsoft.ML;
 using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.Ensemble.Selector;
-using Microsoft.ML.Runtime.Ensemble.Selector.SubModelSelector;
+using Microsoft.ML.Trainers.Ensemble;
 
 [assembly: LoadableClass(typeof(AllSelector), null, typeof(SignatureEnsembleSubModelSelector), AllSelector.UserName, AllSelector.LoadName)]
 
-namespace Microsoft.ML.Runtime.Ensemble.Selector.SubModelSelector
+namespace Microsoft.ML.Trainers.Ensemble
 {
-    public class AllSelector : BaseSubModelSelector<Single>, IBinarySubModelSelector, IRegressionSubModelSelector
+    internal sealed class AllSelector : BaseSubModelSelector<Single>, IBinarySubModelSelector, IRegressionSubModelSelector
     {
         public const string UserName = "All Selector";
         public const string LoadName = "AllSelector";

@@ -11,14 +11,41 @@
 
 using System;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
+using Microsoft.ML.Internal.CpuMath.Core;
+using nuint = System.UInt64;
 
-namespace Microsoft.ML.Runtime.Internal.CpuMath
+namespace Microsoft.ML.Internal.CpuMath
 {
     internal static class AvxIntrinsics
     {
-        private static readonly Vector256<float> _absMask256 = Avx.StaticCast<int, float>(Avx.SetAllVector256(0x7FFFFFFF));
+        public static readonly uint[] LeadingAlignmentMask = new uint[64]
+        {
+            0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+            0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+            0xFFFFFFFF, 0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+            0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+            0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+            0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0x00000000, 0x00000000, 0x00000000,
+            0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0x00000000, 0x00000000,
+            0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0x00000000,
+        };
+
+        public static readonly uint[] TrailingAlignmentMask = new uint[64]
+        {
+            0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+            0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0xFFFFFFFF,
+            0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0xFFFFFFFF, 0xFFFFFFFF,
+            0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
+            0x00000000, 0x00000000, 0x00000000, 0x00000000, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
+            0x00000000, 0x00000000, 0x00000000, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
+            0x00000000, 0x00000000, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
+            0x00000000, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF,
+        };
+
+        private static readonly Vector256<float> _absMask256 = Vector256.Create(0x7FFFFFFF).AsSingle();
 
         private const int Vector256Alignment = 32;
 
@@ -45,12 +72,22 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
 
         [MethodImplAttribute(MethodImplOptions.AggressiveInlining)]
         private static unsafe Vector256<float> Load8(float* src, int* idx)
-            => Avx.SetVector256(src[idx[7]], src[idx[6]], src[idx[5]], src[idx[4]], src[idx[3]], src[idx[2]], src[idx[1]], src[idx[0]]);
+        {
+            if (Avx2.IsSupported)
+            {
+                Vector256<int> idx256 = Avx.LoadVector256(idx);
+                return Avx2.GatherVector256(src, idx256, 4);
+            }
+            else
+            {
+                return Vector256.Create(src[idx[0]], src[idx[1]], src[idx[2]], src[idx[3]], src[idx[4]], src[idx[5]], src[idx[6]], src[idx[7]]);
+            }
+        }
 
         [MethodImplAttribute(MethodImplOptions.AggressiveInlining)]
         private static unsafe void Store8(in Vector256<float> x, float* dst, int* idx)
         {
-            Vector128<float> tmp = Avx.GetLowerHalf(x);
+            Vector128<float> tmp = x.GetLower();
             Sse.StoreScalar(dst + idx[0], tmp);
             tmp = SseIntrinsics.Rotate(in tmp);
             Sse.StoreScalar(dst + idx[1], tmp);
@@ -97,16 +134,44 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
         [MethodImplAttribute(MethodImplOptions.AggressiveInlining)]
         private static Vector256<float> GetNewDst256(in Vector256<float> xDst1, in Vector256<float> xThreshold)
         {
-            Vector256<float> signMask = Avx.SetAllVector256(-0.0f); // 0x8000 0000
+            Vector256<float> signMask = Vector256.Create(-0.0f); // 0x8000 0000
             Vector256<float> xSign = Avx.And(xDst1, signMask); // result = 0x8000 0000 if xDst1 is negative or 0x0000 0000 otherwise
             Vector256<float> xDst1Abs = Avx.Xor(xDst1, xSign);
-            Vector256<float> xCond = Avx.Compare(xDst1Abs, xThreshold, FloatComparisonMode.GreaterThanOrderedNonSignaling); // result = 0xFFFF FFFF if true
+            Vector256<float> xCond = Avx.Compare(xDst1Abs, xThreshold, FloatComparisonMode.OrderedGreaterThanNonSignaling); // result = 0xFFFF FFFF if true
             Vector256<float> x2 = Avx.Xor(xSign, xThreshold); // -xThreshold if xDst1 is negative and +xThreshold otherwise
             return Avx.And(Avx.Subtract(xDst1, x2), xCond);
         }
 
+        [MethodImplAttribute(MethodImplOptions.AggressiveInlining)]
+        private static unsafe Vector256<float> MultiplyAdd(float* psrc1, Vector256<float> src2, Vector256<float> src3)
+        {
+            if (Fma.IsSupported)
+            {
+                return Fma.MultiplyAdd(Avx.LoadVector256(psrc1), src2, src3);
+            }
+            else
+            {
+                Vector256<float> product = Avx.Multiply(src2, Avx.LoadVector256(psrc1));
+                return Avx.Add(product, src3);
+            }
+        }
+
+        [MethodImplAttribute(MethodImplOptions.AggressiveInlining)]
+        private static Vector256<float> MultiplyAdd(Vector256<float> src1, Vector256<float> src2, Vector256<float> src3)
+        {
+            if (Fma.IsSupported)
+            {
+                return Fma.MultiplyAdd(src1, src2, src3);
+            }
+            else
+            {
+                Vector256<float> product = Avx.Multiply(src1, src2);
+                return Avx.Add(product, src3);
+            }
+        }
+
         // Multiply matrix times vector into vector.
-        public static unsafe void MatMulX(bool add, AlignedArray mat, AlignedArray src, AlignedArray dst, int crow, int ccol)
+        public static unsafe void MatMul(AlignedArray mat, AlignedArray src, AlignedArray dst, int crow, int ccol)
         {
             Contracts.Assert(HasCompatibleAlignment(mat));
             Contracts.Assert(HasCompatibleAlignment(src));
@@ -127,7 +192,7 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
 
                 while (pDstCurrent < pDstEnd)
                 {
-                    Vector256<float> res0 = Avx.SetZeroVector256<float>();
+                    Vector256<float> res0 = Vector256<float>.Zero;
                     Vector256<float> res1 = res0;
                     Vector256<float> res2 = res0;
                     Vector256<float> res3 = res0;
@@ -137,17 +202,24 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
                     while (pSrcCurrent < pSrcEnd)
                     {
                         float* pMatTemp = pMatCurrent;
+                        Contracts.Assert(((nuint)(pMatTemp) % 32) == 0);
+                        Contracts.Assert(((nuint)(pSrcCurrent) % 32) == 0);
 
-                        Vector256<float> x01 = Avx.LoadAlignedVector256(pMatTemp);
-                        Vector256<float> x11 = Avx.LoadAlignedVector256(pMatTemp += ccol);
-                        Vector256<float> x21 = Avx.LoadAlignedVector256(pMatTemp += ccol);
-                        Vector256<float> x31 = Avx.LoadAlignedVector256(pMatTemp += ccol);
-                        Vector256<float> x02 = Avx.LoadAlignedVector256(pSrcCurrent);
+                        // The JIT will only fold away unaligned loads due to the semantics behind
+                        // the VEX-encoding of the memory operand for `ins xmm, xmm, [mem]`. Since
+                        // modern hardware has unaligned loads that are as fast as aligned loads,
+                        // when it doesn't cross a cache-line/page boundary, we will just assert
+                        // that the alignment is correct and allow for the more-efficient codegen.
+                        Vector256<float> x01 = Avx.LoadVector256(pMatTemp);
+                        Vector256<float> x11 = Avx.LoadVector256(pMatTemp += ccol);
+                        Vector256<float> x21 = Avx.LoadVector256(pMatTemp += ccol);
+                        Vector256<float> x31 = Avx.LoadVector256(pMatTemp += ccol);
+                        Vector256<float> x02 = Avx.LoadVector256(pSrcCurrent);
 
-                        res0 = Avx.Add(res0, Avx.Multiply(x01, x02));
-                        res1 = Avx.Add(res1, Avx.Multiply(x11, x02));
-                        res2 = Avx.Add(res2, Avx.Multiply(x21, x02));
-                        res3 = Avx.Add(res3, Avx.Multiply(x31, x02));
+                        res0 = MultiplyAdd(x01, x02, res0);
+                        res1 = MultiplyAdd(x11, x02, res1);
+                        res2 = MultiplyAdd(x21, x02, res2);
+                        res3 = MultiplyAdd(x31, x02, res3);
 
                         pSrcCurrent += 8;
                         pMatCurrent += 8;
@@ -158,11 +230,7 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
                     res2 = Avx.HorizontalAdd(res2, res3);
                     res0 = Avx.HorizontalAdd(res0, res2);
 
-                    Vector128<float> sum = Sse.Add(Avx.GetLowerHalf(res0), GetHigh(in res0));
-                    if (add)
-                    {
-                        sum = Sse.Add(sum, Sse.LoadAlignedVector128(pDstCurrent));
-                    }
+                    Vector128<float> sum = Sse.Add(res0.GetLower(), GetHigh(in res0));
                     Sse.StoreAligned(pDstCurrent, sum);
 
                     pDstCurrent += 4;
@@ -172,15 +240,15 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
         }
 
         // Partial sparse source vector.
-        public static unsafe void MatMulPX(bool add, AlignedArray mat, int[] rgposSrc, AlignedArray src,
-                                        int posMin, int iposMin, int iposEnd, AlignedArray dst, int crow, int ccol)
+        public static unsafe void MatMulP(AlignedArray mat, ReadOnlySpan<int> rgposSrc, AlignedArray src,
+                                int posMin, int iposMin, int iposEnd, AlignedArray dst, int crow, int ccol)
         {
+            // REVIEW: For extremely sparse inputs, interchanging the loops would
+            // likely be more efficient.
             Contracts.Assert(HasCompatibleAlignment(mat));
             Contracts.Assert(HasCompatibleAlignment(src));
             Contracts.Assert(HasCompatibleAlignment(dst));
 
-            // REVIEW: For extremely sparse inputs, interchanging the loops would
-            // likely be more efficient.
             fixed (float* pSrcStart = &src.Items[0])
             fixed (float* pDstStart = &dst.Items[0])
             fixed (float* pMatStart = &mat.Items[0])
@@ -202,7 +270,7 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
                     float* pm1 = pm0 + ccol;
                     float* pm2 = pm1 + ccol;
                     float* pm3 = pm2 + ccol;
-                    Vector256<float> result = Avx.SetZeroVector256<float>();
+                    Vector256<float> result = Vector256<float>.Zero;
 
                     int* ppos = pposMin;
 
@@ -210,28 +278,23 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
                     {
                         int col1 = *ppos;
                         int col2 = col1 + 4 * ccol;
-                        Vector256<float> x1 = Avx.SetVector256(pm3[col2], pm2[col2], pm1[col2], pm0[col2],
-                                                                pm3[col1], pm2[col1], pm1[col1], pm0[col1]);
-                        Vector256<float> x2 = Avx.SetAllVector256(pSrcCurrent[col1]);
+                        Vector256<float> x1 = Vector256.Create(pm0[col1], pm1[col1], pm2[col1], pm3[col1],
+                                                                pm0[col2], pm1[col2], pm2[col2], pm3[col2]);
+                        Vector256<float> x2 = Vector256.Create(pSrcCurrent[col1]);
                         x2 = Avx.Multiply(x2, x1);
                         result = Avx.Add(result, x2);
 
                         ppos++;
                     }
 
-                    if (add)
-                    {
-                        result = Avx.Add(result, Avx.LoadAlignedVector256(pDstCurrent));
-                    }
                     Avx.StoreAligned(pDstCurrent, result);
-
                     pDstCurrent += 8;
                     pm0 += 8 * ccol;
                 }
             }
         }
 
-        public static unsafe void MatMulTranX(bool add, AlignedArray mat, AlignedArray src, AlignedArray dst, int crow, int ccol)
+        public static unsafe void MatMulTran(AlignedArray mat, AlignedArray src, AlignedArray dst, int crow, int ccol)
         {
             Contracts.Assert(HasCompatibleAlignment(mat));
             Contracts.Assert(HasCompatibleAlignment(src));
@@ -251,86 +314,94 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
                 float* pMatCurrent = pmat;
 
                 // We do 4-way unrolling
-                if (!add)
+                Vector128<float> h01 = Sse.LoadAlignedVector128(pSrcCurrent);
+                // Replicate each slot of h01 (ABCD) into its own register.
+                Vector128<float> h11 = Sse.Shuffle(h01, h01, 0x55); // B
+                Vector128<float> h21 = Sse.Shuffle(h01, h01, 0xAA); // C
+                Vector128<float> h31 = Sse.Shuffle(h01, h01, 0xFF); // D
+                h01 = Sse.Shuffle(h01, h01, 0x00); // A
+
+                Vector256<float> x01 = Vector256.Create(h01, h01);
+                Vector256<float> x11 = Vector256.Create(h11, h11);
+                Vector256<float> x21 = Vector256.Create(h21, h21);
+                Vector256<float> x31 = Vector256.Create(h31, h31);
+
+                pSrcCurrent += 4;
+
+                float* pDstCurrent = pdst;
+
+                while (pDstCurrent < pDstEnd)
                 {
-                    Vector128<float> h01 = Sse.LoadAlignedVector128(pSrcCurrent);
-                    // Replicate each slot of h01 (ABCD) into its own register.
-                    Vector128<float> h11 = Sse.Shuffle(h01, h01, 0x55); // B
-                    Vector128<float> h21 = Sse.Shuffle(h01, h01, 0xAA); // C
-                    Vector128<float> h31 = Sse.Shuffle(h01, h01, 0xFF); // D
-                    h01 = Sse.Shuffle(h01, h01, 0x00); // A
+                    float* pMatTemp = pMatCurrent;
+                    Contracts.Assert(((nuint)(pMatTemp) % 32) == 0);
 
-                    Vector256<float> x01 = Avx.SetHighLow(h01, h01);
-                    Vector256<float> x11 = Avx.SetHighLow(h11, h11);
-                    Vector256<float> x21 = Avx.SetHighLow(h21, h21);
-                    Vector256<float> x31 = Avx.SetHighLow(h31, h31);
+                    // The JIT will only fold away unaligned loads due to the semantics behind
+                    // the VEX-encoding of the memory operand for `ins xmm, xmm, [mem]`. Since
+                    // modern hardware has unaligned loads that are as fast as aligned loads,
+                    // when it doesn't cross a cache-line/page boundary, we will just assert
+                    // that the alignment is correct and allow for the more-efficient codegen.
+                    Vector256<float> x02 = Avx.LoadVector256(pMatTemp);
+                    Vector256<float> x12 = Avx.LoadVector256(pMatTemp += crow);
+                    Vector256<float> x22 = Avx.LoadVector256(pMatTemp += crow);
+                    Vector256<float> x32 = Avx.LoadVector256(pMatTemp += crow);
 
-                    pSrcCurrent += 4;
+                    x02 = Avx.Multiply(x01, x02);
+                    x02 = MultiplyAdd(x11, x12, x02);
 
-                    float* pDstCurrent = pdst;
+                    x22 = Avx.Multiply(x21, x22);
+                    x22 = MultiplyAdd(x31, x32, x22);
 
-                    while (pDstCurrent < pDstEnd)
-                    {
-                        float* pMatTemp = pMatCurrent;
-                        Vector256<float> x02 = Avx.LoadAlignedVector256(pMatTemp);
-                        Vector256<float> x12 = Avx.LoadAlignedVector256(pMatTemp += crow);
-                        Vector256<float> x22 = Avx.LoadAlignedVector256(pMatTemp += crow);
-                        Vector256<float> x32 = Avx.LoadAlignedVector256(pMatTemp += crow);
+                    x02 = Avx.Add(x02, x22);
+                    Avx.StoreAligned(pDstCurrent, x02);
 
-                        x02 = Avx.Multiply(x01, x02);
-                        x12 = Avx.Multiply(x11, x12);
-                        x22 = Avx.Multiply(x21, x22);
-                        x32 = Avx.Multiply(x31, x32);
-
-                        x02 = Avx.Add(x02, x12);
-                        x22 = Avx.Add(x22, x32);
-                        x02 = Avx.Add(x02, x22);
-
-                        Avx.StoreAligned(pDstCurrent, x02);
-
-                        pDstCurrent += 8;
-                        pMatCurrent += 8;
-                    }
-
-                    pMatCurrent += 3 * crow;
+                    pDstCurrent += 8;
+                    pMatCurrent += 8;
                 }
+
+                pMatCurrent += 3 * crow;
 
                 while (pSrcCurrent < pSrcEnd)
                 {
-                    Vector128<float> h01 = Sse.LoadAlignedVector128(pSrcCurrent);
+                    h01 = Sse.LoadAlignedVector128(pSrcCurrent);
                     // Replicate each slot of h01 (ABCD) into its own register.
-                    Vector128<float> h11 = Sse.Shuffle(h01, h01, 0x55); // B
-                    Vector128<float> h21 = Sse.Shuffle(h01, h01, 0xAA); // C
-                    Vector128<float> h31 = Sse.Shuffle(h01, h01, 0xFF); // D
+                    h11 = Sse.Shuffle(h01, h01, 0x55); // B
+                    h21 = Sse.Shuffle(h01, h01, 0xAA); // C
+                    h31 = Sse.Shuffle(h01, h01, 0xFF); // D
                     h01 = Sse.Shuffle(h01, h01, 0x00); // A
 
-                    Vector256<float> x01 = Avx.SetHighLow(h01, h01);
-                    Vector256<float> x11 = Avx.SetHighLow(h11, h11);
-                    Vector256<float> x21 = Avx.SetHighLow(h21, h21);
-                    Vector256<float> x31 = Avx.SetHighLow(h31, h31);
+                    x01 = Vector256.Create(h01, h01);
+                    x11 = Vector256.Create(h11, h11);
+                    x21 = Vector256.Create(h21, h21);
+                    x31 = Vector256.Create(h31, h31);
 
-                    float* pDstCurrent = pdst;
+                    pDstCurrent = pdst;
 
                     while (pDstCurrent < pDstEnd)
                     {
                         float* pMatTemp = pMatCurrent;
 
-                        Vector256<float> x02 = Avx.LoadAlignedVector256(pMatTemp);
-                        Vector256<float> x12 = Avx.LoadAlignedVector256(pMatTemp += crow);
-                        Vector256<float> x22 = Avx.LoadAlignedVector256(pMatTemp += crow);
-                        Vector256<float> x32 = Avx.LoadAlignedVector256(pMatTemp += crow);
-                        Vector256<float> x3 = Avx.LoadAlignedVector256(pDstCurrent);
+                        Contracts.Assert(((nuint)(pMatTemp) % 32) == 0);
+                        Contracts.Assert(((nuint)(pDstCurrent) % 32) == 0);
+
+                        // The JIT will only fold away unaligned loads due to the semantics behind
+                        // the VEX-encoding of the memory operand for `ins xmm, xmm, [mem]`. Since
+                        // modern hardware has unaligned loads that are as fast as aligned loads,
+                        // when it doesn't cross a cache-line/page boundary, we will just assert
+                        // that the alignment is correct and allow for the more-efficient codegen.
+                        Vector256<float> x02 = Avx.LoadVector256(pMatTemp);
+                        Vector256<float> x12 = Avx.LoadVector256(pMatTemp += crow);
+                        Vector256<float> x22 = Avx.LoadVector256(pMatTemp += crow);
+                        Vector256<float> x32 = Avx.LoadVector256(pMatTemp += crow);
+                        Vector256<float> x3 = Avx.LoadVector256(pDstCurrent);
 
                         x02 = Avx.Multiply(x01, x02);
-                        x12 = Avx.Multiply(x11, x12);
-                        x22 = Avx.Multiply(x21, x22);
-                        x32 = Avx.Multiply(x31, x32);
+                        x02 = MultiplyAdd(x11, x12, x02);
 
-                        x02 = Avx.Add(x02, x12);
-                        x22 = Avx.Add(x22, x32);
+                        x22 = Avx.Multiply(x21, x22);
+                        x22 = MultiplyAdd(x31, x32, x22);
+
                         x02 = Avx.Add(x02, x22);
                         x3 = Avx.Add(x02, x3);
-
                         Avx.StoreAligned(pDstCurrent, x3);
 
                         pDstCurrent += 8;
@@ -343,82 +414,16 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
             }
         }
 
-        // Partial sparse source vector.
-        public static unsafe void MatMulTranPX(bool add, AlignedArray mat, int[] rgposSrc, AlignedArray src,
-                                        int posMin, int iposMin, int iposEnd, AlignedArray dst, int crow)
-        {
-            Contracts.Assert(HasCompatibleAlignment(mat));
-            Contracts.Assert(HasCompatibleAlignment(src));
-            Contracts.Assert(HasCompatibleAlignment(dst));
-
-            fixed (float* pSrcStart = &src.Items[0])
-            fixed (float* pDstStart = &dst.Items[0])
-            fixed (float* pMatStart = &mat.Items[0])
-            fixed (int* pposSrc = &rgposSrc[0])
-            {
-                float* psrc = GetAlignedBase(src, pSrcStart);
-                float* pdst = GetAlignedBase(dst, pDstStart);
-                float* pmat = GetAlignedBase(mat, pMatStart);
-
-                int* ppos = pposSrc + iposMin;
-                int* pposEnd = pposSrc + iposEnd;
-                float* pDstEnd = pdst + crow;
-
-                if (!add)
-                {
-                    int col = *ppos - posMin;
-                    ppos++;
-
-                    Vector256<float> x0 = Avx.SetAllVector256(psrc[col]);
-                    float* pDstCurrent = pdst;
-                    float* pMatCurrent = pmat + col * crow;
-
-                    while (pDstCurrent < pDstEnd)
-                    {
-                        Vector256<float> x1 = Avx.LoadAlignedVector256(pMatCurrent);
-                        x1 = Avx.Multiply(x1, x0);
-                        Avx.StoreAligned(pDstCurrent, x1);
-
-                        pDstCurrent += 8;
-                        pMatCurrent += 8;
-                    }
-                }
-
-                // REVIEW: Should we explore unrolling the outer loop?
-                while (ppos < pposEnd)
-                {
-                    int col = *ppos - posMin;
-
-                    Vector256<float> x0 = Avx.SetAllVector256(psrc[col]);
-                    float* pDstCurrent = pdst;
-                    float* pMatCurrent = pmat + col * crow;
-
-                    while (pDstCurrent < pDstEnd)
-                    {
-                        Vector256<float> x1 = Avx.LoadAlignedVector256(pMatCurrent);
-                        Vector256<float> x2 = Avx.LoadAlignedVector256(pDstCurrent);
-                        x1 = Avx.Multiply(x1, x0);
-                        x2 = Avx.Add(x2, x1);
-                        Avx.StoreAligned(pDstCurrent, x2);
-
-                        pDstCurrent += 8;
-                        pMatCurrent += 8;
-                    }
-
-                    ppos++;
-                }
-            }
-        }
-
         // dst[i] += scale
         public static unsafe void AddScalarU(float scalar, Span<float> dst)
         {
-            fixed (float* pdst = dst)
+            fixed (float* pdst = &MemoryMarshal.GetReference(dst))
             {
                 float* pDstEnd = pdst + dst.Length;
                 float* pDstCurrent = pdst;
+                float* pVectorizationEnd = pDstEnd - 4;
 
-                Vector256<float> scalarVector256 = Avx.SetAllVector256(scalar);
+                Vector256<float> scalarVector256 = Vector256.Create(scalar);
 
                 while (pDstCurrent + 8 <= pDstEnd)
                 {
@@ -429,9 +434,9 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
                     pDstCurrent += 8;
                 }
 
-                Vector128<float> scalarVector128 = Sse.SetAllVector128(scalar);
+                Vector128<float> scalarVector128 = Vector128.Create(scalar);
 
-                if (pDstCurrent + 4 <= pDstEnd)
+                if (pDstCurrent <= pVectorizationEnd)
                 {
                     Vector128<float> dstVector = Sse.LoadVector128(pDstCurrent);
                     dstVector = Sse.Add(dstVector, scalarVector128);
@@ -451,59 +456,126 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
             }
         }
 
-        public static unsafe void ScaleU(float scale, Span<float> dst)
+        public static unsafe void Scale(float scale, Span<float> dst)
         {
-            fixed (float* pdst = dst)
+            fixed (uint* pLeadingAlignmentMask = &LeadingAlignmentMask[0])
+            fixed (uint* pTrailingAlignmentMask = &TrailingAlignmentMask[0])
+            fixed (float* pd = &MemoryMarshal.GetReference(dst))
             {
-                float* pDstCurrent = pdst;
-                float* pEnd = pdst + dst.Length;
+                float* pDstCurrent = pd;
+                int length = dst.Length;
+                Vector256<float> scaleVector256 = Vector256.Create(scale);
 
-                Vector256<float> scaleVector256 = Avx.SetAllVector256(scale);
+                nuint address = (nuint)(pd);
+                int misalignment = (int)(address % 32);
+                int remainder = 0;
 
-                while (pDstCurrent + 8 <= pEnd)
+                if ((misalignment & 3) != 0)
                 {
-                    Vector256<float> dstVector = Avx.LoadVector256(pDstCurrent);
+                    // Handles cases where the data is not 32-bit aligned and we can't ever use aligned operations
+                    remainder = length % 8;
 
-                    dstVector = Avx.Multiply(scaleVector256, dstVector);
-                    Avx.Store(pDstCurrent, dstVector);
+                    for (float* pEnd = pd + (length - remainder); pDstCurrent < pEnd; pDstCurrent += 8)
+                    {
+                        Vector256<float> temp = Avx.LoadVector256(pDstCurrent);
+                        temp = Avx.Multiply(scaleVector256, temp);
+                        Avx.Store(pDstCurrent, temp);
+                    }
+                }
+                else
+                {
+                    if (misalignment != 0)
+                    {
+                        // Handle cases where the data is not 256-bit aligned by doing an unaligned read and then
+                        // masking any elements that will be included in the first aligned read
 
-                    pDstCurrent += 8;
+                        misalignment >>= 2;
+                        misalignment = 8 - misalignment;
+
+                        Vector256<float> result = Avx.LoadVector256(pDstCurrent);
+
+                        Vector256<float> leadingMask = Avx.LoadVector256(((float*)(pLeadingAlignmentMask)) + (misalignment * 8));
+                        Vector256<float> trailingMask = Avx.LoadVector256(((float*)(pTrailingAlignmentMask)) + ((8 - misalignment) * 8));
+
+                        Vector256<float> temp = Avx.And(result, trailingMask);
+                        result = Avx.Multiply(scaleVector256, result);
+
+                        // Masking operation is done at the end to avoid doing an Or operation with negative Zero.
+                        result = Avx.And(result, leadingMask);
+                        result = Avx.Or(result, temp);
+
+                        Avx.Store(pDstCurrent, result);
+
+                        pDstCurrent += misalignment;
+                        length -= misalignment;
+                    }
+
+                    if (length > 7)
+                    {
+                        // Handle all the 256-bit blocks that we can now that we have offset to an aligned address
+
+                        remainder = length % 8;
+
+                        for (float* pEnd = pDstCurrent + (length - remainder); pDstCurrent < pEnd; pDstCurrent += 8)
+                        {
+                            // The JIT will only fold away unaligned loads due to the semantics behind
+                            // the VEX-encoding of the memory operand for `ins xmm, xmm, [mem]`. Since
+                            // modern hardware has unaligned loads that are as fast as aligned loads,
+                            // when it doesn't cross a cache-line/page boundary, we will just assert
+                            // that the alignment is correct and allow for the more-efficient codegen.
+
+                            Contracts.Assert(((nuint)(pDstCurrent) % 32) == 0);
+                            Vector256<float> temp = Avx.LoadVector256(pDstCurrent);
+                            temp = Avx.Multiply(scaleVector256, temp);
+                            Avx.Store(pDstCurrent, temp);
+                        }
+                    }
+                    else
+                    {
+                        // Handle the "worst-case" scenario, which is when we have 8-16 elements and the input is not
+                        // 256-bit aligned. This means we can't do any aligned loads and will just end up doing two
+                        // unaligned loads where we mask the input each time.
+                        remainder = length;
+                    }
                 }
 
-                Vector128<float> scaleVector128 = Sse.SetAllVector128(scale);
-
-                if (pDstCurrent + 4 <= pEnd)
+                if (remainder != 0)
                 {
-                    Vector128<float> dstVector = Sse.LoadVector128(pDstCurrent);
+                    // Handle any trailing elements that don't fit into a 128-bit block by moving back so that the next
+                    // unaligned load will read to the end of the array and then mask out any elements already processed
 
-                    dstVector = Sse.Multiply(scaleVector128, dstVector);
-                    Sse.Store(pDstCurrent, dstVector);
+                    pDstCurrent -= (8 - remainder);
 
-                    pDstCurrent += 4;
-                }
+                    Vector256<float> result = Avx.LoadVector256(pDstCurrent);
 
-                while (pDstCurrent < pEnd)
-                {
-                    Vector128<float> dstVector = Sse.LoadScalarVector128(pDstCurrent);
+                    Vector256<float> trailingMask = Avx.LoadVector256(((float*)(pTrailingAlignmentMask)) + (remainder * 8));
+                    Vector256<float> leadingMask = Avx.LoadVector256(((float*)(pLeadingAlignmentMask)) + ((8 - remainder) * 8));
 
-                    dstVector = Sse.MultiplyScalar(scaleVector128, dstVector);
-                    Sse.StoreScalar(pDstCurrent, dstVector);
+                    Vector256<float> temp = Avx.And(result, leadingMask);
+                    result = Avx.Multiply(scaleVector256, result);
 
-                    pDstCurrent++;
+                    // Masking operation is done at the end to avoid doing an Or operation with negative Zero.
+                    result = Avx.And(result, trailingMask);
+                    result = Avx.Or(result, temp);
+
+                    Avx.Store(pDstCurrent, result);
                 }
             }
         }
 
-        public static unsafe void ScaleSrcU(float scale, Span<float> src, Span<float> dst)
+        public static unsafe void ScaleSrcU(float scale, ReadOnlySpan<float> src, Span<float> dst, int count)
         {
-            fixed (float* psrc = src)
-            fixed (float* pdst = dst)
+            Contracts.Assert(count <= src.Length);
+            Contracts.Assert(count <= dst.Length);
+            fixed (float* psrc = &MemoryMarshal.GetReference(src))
+            fixed (float* pdst = &MemoryMarshal.GetReference(dst))
             {
-                float* pDstEnd = pdst + dst.Length;
+                float* pDstEnd = pdst + count;
                 float* pSrcCurrent = psrc;
                 float* pDstCurrent = pdst;
+                float* pVectorizationEnd = pDstEnd - 4;
 
-                Vector256<float> scaleVector256 = Avx.SetAllVector256(scale);
+                Vector256<float> scaleVector256 = Vector256.Create(scale);
 
                 while (pDstCurrent + 8 <= pDstEnd)
                 {
@@ -515,9 +587,9 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
                     pDstCurrent += 8;
                 }
 
-                Vector128<float> scaleVector128 = Sse.SetAllVector128(scale);
+                Vector128<float> scaleVector128 = Vector128.Create(scale);
 
-                if (pDstCurrent + 4 <= pDstEnd)
+                if (pDstCurrent <= pVectorizationEnd)
                 {
                     Vector128<float> srcVector = Sse.LoadVector128(pSrcCurrent);
                     srcVector = Sse.Multiply(srcVector, scaleVector128);
@@ -542,13 +614,14 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
         // dst[i] = a * (dst[i] + b)
         public static unsafe void ScaleAddU(float a, float b, Span<float> dst)
         {
-            fixed (float* pdst = dst)
+            fixed (float* pdst = &MemoryMarshal.GetReference(dst))
             {
                 float* pDstEnd = pdst + dst.Length;
                 float* pDstCurrent = pdst;
+                float* pVectorizationEnd = pDstEnd - 4;
 
-                Vector256<float> a256 = Avx.SetAllVector256(a);
-                Vector256<float> b256 = Avx.SetAllVector256(b);
+                Vector256<float> a256 = Vector256.Create(a);
+                Vector256<float> b256 = Vector256.Create(b);
 
                 while (pDstCurrent + 8 <= pDstEnd)
                 {
@@ -560,10 +633,10 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
                     pDstCurrent += 8;
                 }
 
-                Vector128<float> a128 = Sse.SetAllVector128(a);
-                Vector128<float> b128 = Sse.SetAllVector128(b);
+                Vector128<float> a128 = Vector128.Create(a);
+                Vector128<float> b128 = Vector128.Create(b);
 
-                if (pDstCurrent + 4 <= pDstEnd)
+                if (pDstCurrent <= pVectorizationEnd)
                 {
                     Vector128<float> dstVector = Sse.LoadVector128(pDstCurrent);
                     dstVector = Sse.Add(dstVector, b128);
@@ -585,31 +658,31 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
             }
         }
 
-        public static unsafe void AddScaleU(float scale, Span<float> src, Span<float> dst)
+        public static unsafe void AddScaleU(float scale, ReadOnlySpan<float> src, Span<float> dst, int count)
         {
-            fixed (float* psrc = src)
-            fixed (float* pdst = dst)
+            Contracts.Assert(count <= src.Length);
+            Contracts.Assert(count <= dst.Length);
+            fixed (float* psrc = &MemoryMarshal.GetReference(src))
+            fixed (float* pdst = &MemoryMarshal.GetReference(dst))
             {
                 float* pSrcCurrent = psrc;
                 float* pDstCurrent = pdst;
-                float* pEnd = pdst + dst.Length;
+                float* pEnd = pdst + count;
 
-                Vector256<float> scaleVector256 = Avx.SetAllVector256(scale);
+                Vector256<float> scaleVector256 = Vector256.Create(scale);
 
                 while (pDstCurrent + 8 <= pEnd)
                 {
-                    Vector256<float> srcVector = Avx.LoadVector256(pSrcCurrent);
                     Vector256<float> dstVector = Avx.LoadVector256(pDstCurrent);
 
-                    srcVector = Avx.Multiply(srcVector, scaleVector256);
-                    dstVector = Avx.Add(dstVector, srcVector);
+                    dstVector = MultiplyAdd(pSrcCurrent, scaleVector256, dstVector);
                     Avx.Store(pDstCurrent, dstVector);
 
                     pSrcCurrent += 8;
                     pDstCurrent += 8;
                 }
 
-                Vector128<float> scaleVector128 = Sse.SetAllVector128(scale);
+                Vector128<float> scaleVector128 = Vector128.Create(scale);
 
                 if (pDstCurrent + 4 <= pEnd)
                 {
@@ -639,25 +712,26 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
             }
         }
 
-        public static unsafe void AddScaleCopyU(float scale, Span<float> src, Span<float> dst, Span<float> result)
+        public static unsafe void AddScaleCopyU(float scale, ReadOnlySpan<float> src, ReadOnlySpan<float> dst, Span<float> result, int count)
         {
-            fixed (float* psrc = src)
-            fixed (float* pdst = dst)
-            fixed (float* pres = result)
+            Contracts.Assert(count <= src.Length);
+            Contracts.Assert(count <= dst.Length);
+            Contracts.Assert(count <= result.Length);
+            fixed (float* psrc = &MemoryMarshal.GetReference(src))
+            fixed (float* pdst = &MemoryMarshal.GetReference(dst))
+            fixed (float* pres = &MemoryMarshal.GetReference(result))
             {
-                float* pResEnd = pres + result.Length;
+                float* pResEnd = pres + count;
                 float* pSrcCurrent = psrc;
                 float* pDstCurrent = pdst;
                 float* pResCurrent = pres;
 
-                Vector256<float> scaleVector256 = Avx.SetAllVector256(scale);
+                Vector256<float> scaleVector256 = Vector256.Create(scale);
 
                 while (pResCurrent + 8 <= pResEnd)
                 {
-                    Vector256<float> srcVector = Avx.LoadVector256(pSrcCurrent);
                     Vector256<float> dstVector = Avx.LoadVector256(pDstCurrent);
-                    srcVector = Avx.Multiply(srcVector, scaleVector256);
-                    dstVector = Avx.Add(dstVector, srcVector);
+                    dstVector = MultiplyAdd(pSrcCurrent, scaleVector256, dstVector);
                     Avx.Store(pResCurrent, dstVector);
 
                     pSrcCurrent += 8;
@@ -665,7 +739,7 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
                     pResCurrent += 8;
                 }
 
-                Vector128<float> scaleVector128 = Sse.SetAllVector128(scale);
+                Vector128<float> scaleVector128 = Vector128.Create(scale);
 
                 if (pResCurrent + 4 <= pResEnd)
                 {
@@ -695,33 +769,33 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
             }
         }
 
-        public static unsafe void AddScaleSU(float scale, Span<float> src, Span<int> idx, Span<float> dst)
+        public static unsafe void AddScaleSU(float scale, ReadOnlySpan<float> src, ReadOnlySpan<int> idx, Span<float> dst, int count)
         {
-            fixed (float* psrc = src)
-            fixed (int* pidx = idx)
-            fixed (float* pdst = dst)
+            Contracts.Assert(count <= src.Length);
+            Contracts.Assert(count <= dst.Length);
+            Contracts.Assert(count <= idx.Length);
+            fixed (float* psrc = &MemoryMarshal.GetReference(src))
+            fixed (int* pidx = &MemoryMarshal.GetReference(idx))
+            fixed (float* pdst = &MemoryMarshal.GetReference(dst))
             {
                 float* pSrcCurrent = psrc;
                 int* pIdxCurrent = pidx;
                 float* pDstCurrent = pdst;
-                int* pEnd = pidx + idx.Length;
+                int* pEnd = pidx + count;
 
-                Vector256<float> scaleVector256 = Avx.SetAllVector256(scale);
+                Vector256<float> scaleVector256 = Vector256.Create(scale);
 
                 while (pIdxCurrent + 8 <= pEnd)
                 {
-                    Vector256<float> srcVector = Avx.LoadVector256(pSrcCurrent);
                     Vector256<float> dstVector = Load8(pDstCurrent, pIdxCurrent);
-
-                    srcVector = Avx.Multiply(srcVector, scaleVector256);
-                    dstVector = Avx.Add(dstVector, srcVector);
+                    dstVector = MultiplyAdd(pSrcCurrent, scaleVector256, dstVector);
                     Store8(in dstVector, pDstCurrent, pIdxCurrent);
 
                     pIdxCurrent += 8;
                     pSrcCurrent += 8;
                 }
 
-                Vector128<float> scaleVector128 = Sse.SetAllVector128(scale);
+                Vector128<float> scaleVector128 = Vector128.Create(scale);
 
                 if (pIdxCurrent + 4 <= pEnd)
                 {
@@ -746,14 +820,16 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
             }
         }
 
-        public static unsafe void AddU(Span<float> src, Span<float> dst)
+        public static unsafe void AddU(ReadOnlySpan<float> src, Span<float> dst, int count)
         {
-            fixed (float* psrc = src)
-            fixed (float* pdst = dst)
+            Contracts.Assert(count <= src.Length);
+            Contracts.Assert(count <= dst.Length);
+            fixed (float* psrc = &MemoryMarshal.GetReference(src))
+            fixed (float* pdst = &MemoryMarshal.GetReference(dst))
             {
                 float* pSrcCurrent = psrc;
                 float* pDstCurrent = pdst;
-                float* pEnd = psrc + src.Length;
+                float* pEnd = psrc + count;
 
                 while (pSrcCurrent + 8 <= pEnd)
                 {
@@ -793,16 +869,19 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
             }
         }
 
-        public static unsafe void AddSU(Span<float> src, Span<int> idx, Span<float> dst)
+        public static unsafe void AddSU(ReadOnlySpan<float> src, ReadOnlySpan<int> idx, Span<float> dst, int count)
         {
-            fixed (float* psrc = src)
-            fixed (int* pidx = idx)
-            fixed (float* pdst = dst)
+            Contracts.Assert(count <= src.Length);
+            Contracts.Assert(count <= dst.Length);
+            Contracts.Assert(count <= idx.Length);
+            fixed (float* psrc = &MemoryMarshal.GetReference(src))
+            fixed (int* pidx = &MemoryMarshal.GetReference(idx))
+            fixed (float* pdst = &MemoryMarshal.GetReference(dst))
             {
                 float* pSrcCurrent = psrc;
                 int* pIdxCurrent = pidx;
                 float* pDstCurrent = pdst;
-                int* pEnd = pidx + idx.Length;
+                int* pEnd = pidx + count;
 
                 while (pIdxCurrent + 8 <= pEnd)
                 {
@@ -838,16 +917,19 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
             }
         }
 
-        public static unsafe void MulElementWiseU(Span<float> src1, Span<float> src2, Span<float> dst)
+        public static unsafe void MulElementWiseU(ReadOnlySpan<float> src1, ReadOnlySpan<float> src2, Span<float> dst, int count)
         {
-            fixed (float* psrc1 = src1)
-            fixed (float* psrc2 = src2)
-            fixed (float* pdst = dst)
+            Contracts.Assert(count <= src1.Length);
+            Contracts.Assert(count <= src2.Length);
+            Contracts.Assert(count <= dst.Length);
+            fixed (float* psrc1 = &MemoryMarshal.GetReference(src1))
+            fixed (float* psrc2 = &MemoryMarshal.GetReference(src2))
+            fixed (float* pdst = &MemoryMarshal.GetReference(dst))
             {
                 float* pSrc1Current = psrc1;
                 float* pSrc2Current = psrc2;
                 float* pDstCurrent = pdst;
-                float* pEnd = pdst + dst.Length;
+                float* pEnd = pdst + count;
 
                 while (pDstCurrent + 8 <= pEnd)
                 {
@@ -887,65 +969,115 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
             }
         }
 
-        public static unsafe float SumU(Span<float> src)
+        public static unsafe float Sum(ReadOnlySpan<float> src)
         {
-            fixed (float* psrc = src)
+            fixed (float* pSrc = &MemoryMarshal.GetReference(src))
+            fixed (uint* pLeadingAlignmentMask = &LeadingAlignmentMask[0])
+            fixed (uint* pTrailingAlignmentMask = &TrailingAlignmentMask[0])
             {
-                float* pSrcEnd = psrc + src.Length;
-                float* pSrcCurrent = psrc;
+                float* pValues = pSrc;
+                int length = src.Length;
+                Vector256<float> result = Vector256<float>.Zero;
 
-                Vector256<float> result256 = Avx.SetZeroVector256<float>();
+                nuint address = (nuint)(pValues);
+                int misalignment = (int)(address % 32);
+                int remainder = 0;
 
-                while (pSrcCurrent + 8 <= pSrcEnd)
+                if ((misalignment & 3) != 0)
                 {
-                    result256 = Avx.Add(result256, Avx.LoadVector256(pSrcCurrent));
-                    pSrcCurrent += 8;
+                    // Handles cases where the data is not 32-bit aligned and we can't ever use aligned operations
+
+                    remainder = length % 8;
+
+                    for (float* pEnd = pValues + (length - remainder); pValues < pEnd; pValues += 8)
+                    {
+                        result = Avx.Add(result, Avx.LoadVector256(pValues));
+                    }
+                }
+                else
+                {
+                    if (misalignment != 0)
+                    {
+                        // Handle cases where the data is not 256-bit aligned by doing an unaligned read and then
+                        // masking any elements that will be included in the first aligned read
+
+                        misalignment >>= 2;
+                        misalignment = 8 - misalignment;
+
+                        Vector256<float> mask = Avx.LoadVector256(((float*)(pLeadingAlignmentMask)) + (misalignment * 8));
+                        Vector256<float> temp = Avx.And(mask, Avx.LoadVector256(pValues));
+                        result = Avx.Add(result, temp);
+
+                        pValues += misalignment;
+                        length -= misalignment;
+                    }
+
+                    if (length > 7)
+                    {
+                        // Handle all the 256-bit blocks that we can now that we have offset to an aligned address
+
+                        remainder = length % 8;
+
+                        for (float* pEnd = pValues + (length - remainder); pValues < pEnd; pValues += 8)
+                        {
+                            // The JIT will only fold away unaligned loads due to the semantics behind
+                            // the VEX-encoding of the memory operand for `ins xmm, xmm, [mem]`. Since
+                            // modern hardware has unaligned loads that are as fast as aligned loads,
+                            // when it doesn't cross a cache-line/page boundary, we will just assert
+                            // that the alignment is correct and allow for the more-efficient codegen.
+
+                            Contracts.Assert(((nuint)(pValues) % 32) == 0);
+                            result = Avx.Add(result, Avx.LoadVector256(pValues));
+                        }
+                    }
+                    else
+                    {
+                        // Handle the "worst-case" scenario, which is when we have 8-16 elements and the input is not
+                        // 256-bit aligned. This means we can't do any aligned loads and will just end up doing two
+                        // unaligned loads where we mask the input each time.
+                        remainder = length;
+                    }
                 }
 
-                result256 = VectorSum256(in result256);
-                Vector128<float> resultPadded = Sse.AddScalar(Avx.GetLowerHalf(result256), GetHigh(result256));
-
-                Vector128<float> result128 = Sse.SetZeroVector128();
-
-                if (pSrcCurrent + 4 <= pSrcEnd)
+                if (remainder != 0)
                 {
-                    result128 = Sse.Add(result128, Sse.LoadVector128(pSrcCurrent));
-                    pSrcCurrent += 4;
+                    // Handle any trailing elements that don't fit into a 128-bit block by moving back so that the next
+                    // unaligned load will read to the end of the array and then mask out any elements already processed
+
+                    pValues -= (8 - remainder);
+
+                    Vector256<float> mask = Avx.LoadVector256(((float*)(pTrailingAlignmentMask)) + (remainder * 8));
+                    Vector256<float> temp = Avx.And(mask, Avx.LoadVector256(pValues));
+                    result = Avx.Add(result, temp);
                 }
 
-                result128 = SseIntrinsics.VectorSum128(in result128);
-
-                while (pSrcCurrent < pSrcEnd)
-                {
-                    result128 = Sse.AddScalar(result128, Sse.LoadScalarVector128(pSrcCurrent));
-                    pSrcCurrent++;
-                }
-
-                return Sse.ConvertToSingle(Sse.AddScalar(result128, resultPadded));
+                // Sum all the elements together and return the result
+                result = VectorSum256(in result);
+                return Sse.AddScalar(result.GetLower(), GetHigh(result)).ToScalar();
             }
         }
 
-        public static unsafe float SumSqU(Span<float> src)
+        public static unsafe float SumSqU(ReadOnlySpan<float> src)
         {
-            fixed (float* psrc = src)
+            fixed (float* psrc = &MemoryMarshal.GetReference(src))
             {
                 float* pSrcEnd = psrc + src.Length;
                 float* pSrcCurrent = psrc;
 
-                Vector256<float> result256 = Avx.SetZeroVector256<float>();
+                Vector256<float> result256 = Vector256<float>.Zero;
 
                 while (pSrcCurrent + 8 <= pSrcEnd)
                 {
                     Vector256<float> srcVector = Avx.LoadVector256(pSrcCurrent);
-                    result256 = Avx.Add(result256, Avx.Multiply(srcVector, srcVector));
+                    result256 = MultiplyAdd(srcVector, srcVector, result256);
 
                     pSrcCurrent += 8;
                 }
 
                 result256 = VectorSum256(in result256);
-                Vector128<float> resultPadded = Sse.AddScalar(Avx.GetLowerHalf(result256), GetHigh(result256));
+                Vector128<float> resultPadded = Sse.AddScalar(result256.GetLower(), GetHigh(result256));
 
-                Vector128<float> result128 = Sse.SetZeroVector128();
+                Vector128<float> result128 = Vector128<float>.Zero;
 
                 if (pSrcCurrent + 4 <= pSrcEnd)
                 {
@@ -965,34 +1097,33 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
                     pSrcCurrent++;
                 }
 
-                return Sse.ConvertToSingle(Sse.AddScalar(result128, resultPadded));
+                return Sse.AddScalar(result128, resultPadded).ToScalar();
             }
         }
 
-        public static unsafe float SumSqDiffU(float mean, Span<float> src)
+        public static unsafe float SumSqDiffU(float mean, ReadOnlySpan<float> src)
         {
-            fixed (float* psrc = src)
+            fixed (float* psrc = &MemoryMarshal.GetReference(src))
             {
                 float* pSrcEnd = psrc + src.Length;
                 float* pSrcCurrent = psrc;
 
-                Vector256<float> result256 = Avx.SetZeroVector256<float>();
-                Vector256<float> meanVector256 = Avx.SetAllVector256(mean);
+                Vector256<float> result256 = Vector256<float>.Zero;
+                Vector256<float> meanVector256 = Vector256.Create(mean);
 
                 while (pSrcCurrent + 8 <= pSrcEnd)
                 {
                     Vector256<float> srcVector = Avx.LoadVector256(pSrcCurrent);
                     srcVector = Avx.Subtract(srcVector, meanVector256);
-                    result256 = Avx.Add(result256, Avx.Multiply(srcVector, srcVector));
-
+                    result256 = MultiplyAdd(srcVector, srcVector, result256);
                     pSrcCurrent += 8;
                 }
 
                 result256 = VectorSum256(in result256);
-                Vector128<float> resultPadded = Sse.AddScalar(Avx.GetLowerHalf(result256), GetHigh(result256));
+                Vector128<float> resultPadded = Sse.AddScalar(result256.GetLower(), GetHigh(result256));
 
-                Vector128<float> result128 = Sse.SetZeroVector128();
-                Vector128<float> meanVector128 = Sse.SetAllVector128(mean);
+                Vector128<float> result128 = Vector128<float>.Zero;
+                Vector128<float> meanVector128 = Vector128.Create(mean);
 
                 if (pSrcCurrent + 4 <= pSrcEnd)
                 {
@@ -1014,18 +1145,18 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
                     pSrcCurrent++;
                 }
 
-                return Sse.ConvertToSingle(Sse.AddScalar(result128, resultPadded));
+                return Sse.AddScalar(result128, resultPadded).ToScalar();
             }
         }
 
-        public static unsafe float SumAbsU(Span<float> src)
+        public static unsafe float SumAbsU(ReadOnlySpan<float> src)
         {
-            fixed (float* psrc = src)
+            fixed (float* psrc = &MemoryMarshal.GetReference(src))
             {
                 float* pSrcEnd = psrc + src.Length;
                 float* pSrcCurrent = psrc;
 
-                Vector256<float> result256 = Avx.SetZeroVector256<float>();
+                Vector256<float> result256 = Vector256<float>.Zero;
 
                 while (pSrcCurrent + 8 <= pSrcEnd)
                 {
@@ -1036,9 +1167,9 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
                 }
 
                 result256 = VectorSum256(in result256);
-                Vector128<float> resultPadded = Sse.AddScalar(Avx.GetLowerHalf(result256), GetHigh(result256));
+                Vector128<float> resultPadded = Sse.AddScalar(result256.GetLower(), GetHigh(result256));
 
-                Vector128<float> result128 = Sse.SetZeroVector128();
+                Vector128<float> result128 = Vector128<float>.Zero;
 
                 if (pSrcCurrent + 4 <= pSrcEnd)
                 {
@@ -1058,19 +1189,19 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
                     pSrcCurrent++;
                 }
 
-                return Sse.ConvertToSingle(Sse.AddScalar(result128, resultPadded));
+                return Sse.AddScalar(result128, resultPadded).ToScalar();
             }
         }
 
-        public static unsafe float SumAbsDiffU(float mean, Span<float> src)
+        public static unsafe float SumAbsDiffU(float mean, ReadOnlySpan<float> src)
         {
-            fixed (float* psrc = src)
+            fixed (float* psrc = &MemoryMarshal.GetReference(src))
             {
                 float* pSrcEnd = psrc + src.Length;
                 float* pSrcCurrent = psrc;
 
-                Vector256<float> result256 = Avx.SetZeroVector256<float>();
-                Vector256<float> meanVector256 = Avx.SetAllVector256(mean);
+                Vector256<float> result256 = Vector256<float>.Zero;
+                Vector256<float> meanVector256 = Vector256.Create(mean);
 
                 while (pSrcCurrent + 8 <= pSrcEnd)
                 {
@@ -1082,10 +1213,10 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
                 }
 
                 result256 = VectorSum256(in result256);
-                Vector128<float> resultPadded = Sse.AddScalar(Avx.GetLowerHalf(result256), GetHigh(result256));
+                Vector128<float> resultPadded = Sse.AddScalar(result256.GetLower(), GetHigh(result256));
 
-                Vector128<float> result128 = Sse.SetZeroVector128();
-                Vector128<float> meanVector128 = Sse.SetAllVector128(mean);
+                Vector128<float> result128 = Vector128<float>.Zero;
+                Vector128<float> meanVector128 = Vector128.Create(mean);
 
                 if (pSrcCurrent + 4 <= pSrcEnd)
                 {
@@ -1107,18 +1238,18 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
                     pSrcCurrent++;
                 }
 
-                return Sse.ConvertToSingle(Sse.AddScalar(result128, resultPadded));
+                return Sse.AddScalar(result128, resultPadded).ToScalar();
             }
         }
 
-        public static unsafe float MaxAbsU(Span<float> src)
+        public static unsafe float MaxAbsU(ReadOnlySpan<float> src)
         {
-            fixed (float* psrc = src)
+            fixed (float* psrc = &MemoryMarshal.GetReference(src))
             {
                 float* pSrcEnd = psrc + src.Length;
                 float* pSrcCurrent = psrc;
 
-                Vector256<float> result256 = Avx.SetZeroVector256<float>();
+                Vector256<float> result256 = Vector256<float>.Zero;
 
                 while (pSrcCurrent + 8 <= pSrcEnd)
                 {
@@ -1129,9 +1260,9 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
                 }
 
                 result256 = VectorMax256(in result256);
-                Vector128<float> resultPadded = Sse.MaxScalar(Avx.GetLowerHalf(result256), GetHigh(result256));
+                Vector128<float> resultPadded = Sse.MaxScalar(result256.GetLower(), GetHigh(result256));
 
-                Vector128<float> result128 = Sse.SetZeroVector128();
+                Vector128<float> result128 = Vector128<float>.Zero;
 
                 if (pSrcCurrent + 4 <= pSrcEnd)
                 {
@@ -1151,19 +1282,19 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
                     pSrcCurrent++;
                 }
 
-                return Sse.ConvertToSingle(Sse.MaxScalar(result128, resultPadded));
+                return Sse.MaxScalar(result128, resultPadded).ToScalar();
             }
         }
 
-        public static unsafe float MaxAbsDiffU(float mean, Span<float> src)
+        public static unsafe float MaxAbsDiffU(float mean, ReadOnlySpan<float> src)
         {
-            fixed (float* psrc = src)
+            fixed (float* psrc = &MemoryMarshal.GetReference(src))
             {
                 float* pSrcEnd = psrc + src.Length;
                 float* pSrcCurrent = psrc;
 
-                Vector256<float> result256 = Avx.SetZeroVector256<float>();
-                Vector256<float> meanVector256 = Avx.SetAllVector256(mean);
+                Vector256<float> result256 = Vector256<float>.Zero;
+                Vector256<float> meanVector256 = Vector256.Create(mean);
 
                 while (pSrcCurrent + 8 <= pSrcEnd)
                 {
@@ -1175,10 +1306,10 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
                 }
 
                 result256 = VectorMax256(in result256);
-                Vector128<float> resultPadded = Sse.MaxScalar(Avx.GetLowerHalf(result256), GetHigh(result256));
+                Vector128<float> resultPadded = Sse.MaxScalar(result256.GetLower(), GetHigh(result256));
 
-                Vector128<float> result128 = Sse.SetZeroVector128();
-                Vector128<float> meanVector128 = Sse.SetAllVector128(mean);
+                Vector128<float> result128 = Vector128<float>.Zero;
+                Vector128<float> meanVector128 = Vector128.Create(mean);
 
                 if (pSrcCurrent + 4 <= pSrcEnd)
                 {
@@ -1200,36 +1331,35 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
                     pSrcCurrent++;
                 }
 
-                return Sse.ConvertToSingle(Sse.MaxScalar(result128, resultPadded));
+                return Sse.MaxScalar(result128, resultPadded).ToScalar();
             }
         }
 
-        public static unsafe float DotU(Span<float> src, Span<float> dst)
+        public static unsafe float DotU(ReadOnlySpan<float> src, ReadOnlySpan<float> dst, int count)
         {
-            fixed (float* psrc = src)
-            fixed (float* pdst = dst)
+            Contracts.Assert(count <= src.Length);
+            Contracts.Assert(count <= dst.Length);
+            fixed (float* psrc = &MemoryMarshal.GetReference(src))
+            fixed (float* pdst = &MemoryMarshal.GetReference(dst))
             {
                 float* pSrcCurrent = psrc;
                 float* pDstCurrent = pdst;
-                float* pSrcEnd = psrc + src.Length;
+                float* pSrcEnd = psrc + count;
 
-                Vector256<float> result256 = Avx.SetZeroVector256<float>();
+                Vector256<float> result256 = Vector256<float>.Zero;
 
                 while (pSrcCurrent + 8 <= pSrcEnd)
                 {
-                    Vector256<float> srcVector = Avx.LoadVector256(pSrcCurrent);
                     Vector256<float> dstVector = Avx.LoadVector256(pDstCurrent);
-
-                    result256 = Avx.Add(result256, Avx.Multiply(srcVector, dstVector));
-
+                    result256 = MultiplyAdd(pSrcCurrent, dstVector, result256);
                     pSrcCurrent += 8;
                     pDstCurrent += 8;
                 }
 
                 result256 = VectorSum256(in result256);
-                Vector128<float> resultPadded = Sse.AddScalar(Avx.GetLowerHalf(result256), GetHigh(result256));
+                Vector128<float> resultPadded = Sse.AddScalar(result256.GetLower(), GetHigh(result256));
 
-                Vector128<float> result128 = Sse.SetZeroVector128();
+                Vector128<float> result128 = Vector128<float>.Zero;
 
                 if (pSrcCurrent + 4 <= pSrcEnd)
                 {
@@ -1255,38 +1385,38 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
                     pDstCurrent++;
                 }
 
-                return Sse.ConvertToSingle(Sse.AddScalar(result128, resultPadded));
+                return Sse.AddScalar(result128, resultPadded).ToScalar();
             }
         }
 
-        public static unsafe float DotSU(Span<float> src, Span<float> dst, Span<int> idx)
+        public static unsafe float DotSU(ReadOnlySpan<float> src, ReadOnlySpan<float> dst, ReadOnlySpan<int> idx, int count)
         {
-            fixed (float* psrc = src)
-            fixed (float* pdst = dst)
-            fixed (int* pidx = idx)
+            Contracts.Assert(count <= src.Length);
+            Contracts.Assert(count <= dst.Length);
+            Contracts.Assert(count <= idx.Length);
+            fixed (float* psrc = &MemoryMarshal.GetReference(src))
+            fixed (float* pdst = &MemoryMarshal.GetReference(dst))
+            fixed (int* pidx = &MemoryMarshal.GetReference(idx))
             {
                 float* pSrcCurrent = psrc;
                 float* pDstCurrent = pdst;
                 int* pIdxCurrent = pidx;
-                int* pIdxEnd = pidx + idx.Length;
+                int* pIdxEnd = pidx + count;
 
-                Vector256<float> result256 = Avx.SetZeroVector256<float>();
+                Vector256<float> result256 = Vector256<float>.Zero;
 
                 while (pIdxCurrent + 8 <= pIdxEnd)
                 {
                     Vector256<float> srcVector = Load8(pSrcCurrent, pIdxCurrent);
-                    Vector256<float> dstVector = Avx.LoadVector256(pDstCurrent);
-
-                    result256 = Avx.Add(result256, Avx.Multiply(srcVector, dstVector));
-
+                    result256 = MultiplyAdd(pDstCurrent, srcVector, result256);
                     pIdxCurrent += 8;
                     pDstCurrent += 8;
                 }
 
                 result256 = VectorSum256(in result256);
-                Vector128<float> resultPadded = Sse.AddScalar(Avx.GetLowerHalf(result256), GetHigh(result256));
+                Vector128<float> resultPadded = Sse.AddScalar(result256.GetLower(), GetHigh(result256));
 
-                Vector128<float> result128 = Sse.SetZeroVector128();
+                Vector128<float> result128 = Vector128<float>.Zero;
 
                 if (pIdxCurrent + 4 <= pIdxEnd)
                 {
@@ -1312,36 +1442,36 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
                     pDstCurrent++;
                 }
 
-                return Sse.ConvertToSingle(Sse.AddScalar(result128, resultPadded));
+                return Sse.AddScalar(result128, resultPadded).ToScalar();
             }
         }
 
-        public static unsafe float Dist2(Span<float> src, Span<float> dst)
+        public static unsafe float Dist2(ReadOnlySpan<float> src, ReadOnlySpan<float> dst, int count)
         {
-            fixed (float* psrc = src)
-            fixed (float* pdst = dst)
+            Contracts.Assert(count <= src.Length);
+            Contracts.Assert(count <= dst.Length);
+            fixed (float* psrc = &MemoryMarshal.GetReference(src))
+            fixed (float* pdst = &MemoryMarshal.GetReference(dst))
             {
                 float* pSrcCurrent = psrc;
                 float* pDstCurrent = pdst;
-                float* pSrcEnd = psrc + src.Length;
+                float* pSrcEnd = psrc + count;
 
-                Vector256<float> sqDistanceVector256 = Avx.SetZeroVector256<float>();
+                Vector256<float> sqDistanceVector256 = Vector256<float>.Zero;
 
                 while (pSrcCurrent + 8 <= pSrcEnd)
                 {
                     Vector256<float> distanceVector = Avx.Subtract(Avx.LoadVector256(pSrcCurrent),
                                                                     Avx.LoadVector256(pDstCurrent));
-                    sqDistanceVector256 = Avx.Add(sqDistanceVector256,
-                                                Avx.Multiply(distanceVector, distanceVector));
-
+                    sqDistanceVector256 = MultiplyAdd(distanceVector, distanceVector, sqDistanceVector256);
                     pSrcCurrent += 8;
                     pDstCurrent += 8;
                 }
 
                 sqDistanceVector256 = VectorSum256(in sqDistanceVector256);
-                Vector128<float> sqDistanceVectorPadded = Sse.AddScalar(Avx.GetLowerHalf(sqDistanceVector256), GetHigh(sqDistanceVector256));
+                Vector128<float> sqDistanceVectorPadded = Sse.AddScalar(sqDistanceVector256.GetLower(), GetHigh(sqDistanceVector256));
 
-                Vector128<float> sqDistanceVector128 = Sse.SetZeroVector128();
+                Vector128<float> sqDistanceVector128 = Vector128<float>.Zero;
 
                 if (pSrcCurrent + 4 <= pSrcEnd)
                 {
@@ -1356,7 +1486,7 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
 
                 sqDistanceVector128 = SseIntrinsics.VectorSum128(in sqDistanceVector128);
 
-                float norm = Sse.ConvertToSingle(Sse.AddScalar(sqDistanceVector128, sqDistanceVectorPadded));
+                float norm = Sse.AddScalar(sqDistanceVector128, sqDistanceVectorPadded).ToScalar();
                 while (pSrcCurrent < pSrcEnd)
                 {
                     float distance = (*pSrcCurrent) - (*pDstCurrent);
@@ -1370,26 +1500,24 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
             }
         }
 
-        public static unsafe void SdcaL1UpdateU(float primalUpdate, Span<float> src, float threshold, Span<float> v, Span<float> w)
+        public static unsafe void SdcaL1UpdateU(float primalUpdate, int count, ReadOnlySpan<float> src, float threshold, Span<float> v, Span<float> w)
         {
-            fixed (float* psrc = src)
-            fixed (float* pdst1 = v)
-            fixed (float* pdst2 = w)
+            fixed (float* psrc = &MemoryMarshal.GetReference(src))
+            fixed (float* pdst1 = &MemoryMarshal.GetReference(v))
+            fixed (float* pdst2 = &MemoryMarshal.GetReference(w))
             {
-                float* pSrcEnd = psrc + src.Length;
+                float* pSrcEnd = psrc + count;
                 float* pSrcCurrent = psrc;
                 float* pDst1Current = pdst1;
                 float* pDst2Current = pdst2;
 
-                Vector256<float> xPrimal256 = Avx.SetAllVector256(primalUpdate);
-                Vector256<float> xThreshold256 = Avx.SetAllVector256(threshold);
+                Vector256<float> xPrimal256 = Vector256.Create(primalUpdate);
+                Vector256<float> xThreshold256 = Vector256.Create(threshold);
 
                 while (pSrcCurrent + 8 <= pSrcEnd)
                 {
-                    Vector256<float> xSrc = Avx.LoadVector256(pSrcCurrent);
-
                     Vector256<float> xDst1 = Avx.LoadVector256(pDst1Current);
-                    xDst1 = Avx.Add(xDst1, Avx.Multiply(xSrc, xPrimal256));
+                    xDst1 = MultiplyAdd(pSrcCurrent, xPrimal256, xDst1);
                     Vector256<float> xDst2 = GetNewDst256(xDst1, xThreshold256);
 
                     Avx.Store(pDst1Current, xDst1);
@@ -1400,8 +1528,8 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
                     pDst2Current += 8;
                 }
 
-                Vector128<float> xPrimal128 = Sse.SetAllVector128(primalUpdate);
-                Vector128<float> xThreshold128 = Sse.SetAllVector128(threshold);
+                Vector128<float> xPrimal128 = Vector128.Create(primalUpdate);
+                Vector128<float> xThreshold128 = Vector128.Create(threshold);
 
                 if (pSrcCurrent + 4 <= pSrcEnd)
                 {
@@ -1432,26 +1560,24 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
             }
         }
 
-        public static unsafe void SdcaL1UpdateSU(float primalUpdate, Span<float> src, Span<int> indices, float threshold, Span<float> v, Span<float> w)
+        public static unsafe void SdcaL1UpdateSU(float primalUpdate, int count, ReadOnlySpan<float> src, ReadOnlySpan<int> indices, float threshold, Span<float> v, Span<float> w)
         {
-            fixed (float* psrc = src)
-            fixed (int* pidx = indices)
-            fixed (float* pdst1 = v)
-            fixed (float* pdst2 = w)
+            fixed (float* psrc = &MemoryMarshal.GetReference(src))
+            fixed (int* pidx = &MemoryMarshal.GetReference(indices))
+            fixed (float* pdst1 = &MemoryMarshal.GetReference(v))
+            fixed (float* pdst2 = &MemoryMarshal.GetReference(w))
             {
-                int* pIdxEnd = pidx + indices.Length;
+                int* pIdxEnd = pidx + count;
                 float* pSrcCurrent = psrc;
                 int* pIdxCurrent = pidx;
 
-                Vector256<float> xPrimal256 = Avx.SetAllVector256(primalUpdate);
-                Vector256<float> xThreshold = Avx.SetAllVector256(threshold);
+                Vector256<float> xPrimal256 = Vector256.Create(primalUpdate);
+                Vector256<float> xThreshold = Vector256.Create(threshold);
 
                 while (pIdxCurrent + 8 <= pIdxEnd)
                 {
-                    Vector256<float> xSrc = Avx.LoadVector256(pSrcCurrent);
-
                     Vector256<float> xDst1 = Load8(pdst1, pIdxCurrent);
-                    xDst1 = Avx.Add(xDst1, Avx.Multiply(xSrc, xPrimal256));
+                    xDst1 = MultiplyAdd(pSrcCurrent, xPrimal256, xDst1);
                     Vector256<float> xDst2 = GetNewDst256(xDst1, xThreshold);
 
                     Store8(in xDst1, pdst1, pIdxCurrent);
@@ -1461,8 +1587,8 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
                     pSrcCurrent += 8;
                 }
 
-                Vector128<float> xPrimal128 = Sse.SetAllVector128(primalUpdate);
-                Vector128<float> xThreshold128 = Sse.SetAllVector128(threshold);
+                Vector128<float> xPrimal128 = Vector128.Create(primalUpdate);
+                Vector128<float> xThreshold128 = Vector128.Create(threshold);
 
                 if (pIdxCurrent + 4 <= pIdxEnd)
                 {

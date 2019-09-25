@@ -2,14 +2,14 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Float = System.Single;
-
 using System;
 using System.Collections.Generic;
+using Microsoft.ML.Runtime;
 
-namespace Microsoft.ML.Runtime.Internal.Utilities
+namespace Microsoft.ML.Internal.Utilities
 {
-    public abstract class BinFinderBase
+    [BestFriend]
+    internal abstract class BinFinderBase
     {
         private Single[] _valuesSng; // distinct values
         private Double[] _valuesDbl; // distinct values
@@ -272,17 +272,18 @@ namespace Microsoft.ML.Runtime.Internal.Utilities
     }
 }
 
-namespace Microsoft.ML.Runtime.Internal.Utilities
+namespace Microsoft.ML.Internal.Utilities
 {
     // This needs to be large enough to represent a product of 2 ints without losing precision
     using EnergyType = System.Int64;
 
     // Uses the energy function: sum(1,N) dx^2 where dx is the difference in accum values.
-    public sealed class GreedyBinFinder : BinFinderBase
+    [BestFriend]
+    internal sealed class GreedyBinFinder : BinFinderBase
     {
         // Potential drop location for another peg, together with its energy improvement.
         // PlacePegs uses a heap of these. Note that this is a struct so size matters.
-        private struct Segment
+        private readonly struct Segment
         {
             public readonly int Min;
             public readonly int Split;
@@ -317,7 +318,7 @@ namespace Microsoft.ML.Runtime.Internal.Utilities
         private HeapNode.Heap<Peg> _pegHeap; // heap used for selecting the largest energy decrease
         private int[] _accum; // integral of counts
         private int[] _path; // current set of pegs
-        private Float _meanBinSize;
+        private float _meanBinSize;
 
         public GreedyBinFinder()
         {
@@ -337,7 +338,7 @@ namespace Microsoft.ML.Runtime.Internal.Utilities
                 _accum = new int[CountValues + 1];
             for (int i = 0; i < CountValues; i++)
                 _accum[i + 1] = _accum[i] + counts[i];
-            _meanBinSize = (Float)_accum[CountValues] / CountBins;
+            _meanBinSize = (float)_accum[CountValues] / CountBins;
 
             PlacePegs();
 
@@ -523,13 +524,14 @@ namespace Microsoft.ML.Runtime.Internal.Utilities
     }
 }
 
-namespace Microsoft.ML.Runtime.Internal.Utilities
+namespace Microsoft.ML.Internal.Utilities
 {
     // Reasonable choices are Double and System.Int64.
     using EnergyType = System.Double;
 
     // Uses dynamic programming.
-    public sealed class DynamicBinFinder : BinFinderBase
+    [BestFriend]
+    internal sealed class DynamicBinFinder : BinFinderBase
     {
         private int[] _accum; // integral of counts
 
@@ -597,7 +599,7 @@ namespace Microsoft.ML.Runtime.Internal.Utilities
 
             // Row zero is special.
             EnergyType bestWorst = EnergyType.MaxValue;
-            for (int col = width; --col >= 0; )
+            for (int col = width; --col >= 0;)
             {
                 _energies[col] = Square(_accum[1 + col]);
                 EnergyType worst;
@@ -624,7 +626,7 @@ namespace Microsoft.ML.Runtime.Internal.Utilities
             for (int row = 1; row < height; row++)
             {
                 Contracts.Assert(ivBase == (row - 1) * width);
-                for (int col = width; --col >= colMin; )
+                for (int col = width; --col >= colMin;)
                 {
                     int accum = _accum[row + 1 + col];
                     eBest = EnergyType.MaxValue;
@@ -695,7 +697,7 @@ namespace Microsoft.ML.Runtime.Internal.Utilities
 
             // Fill in the rest of the path.
             ivBase = (height - 1) * width;
-            for (int row = height; --row > 0; )
+            for (int row = height; --row > 0;)
             {
                 // Recall that the _pathInfo table doesn't have row zero.
                 ivBase -= width;

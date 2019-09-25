@@ -2,20 +2,21 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-#pragma warning disable 420 // volatile with Interlocked.CompareExchange
-
 using System;
-using System.Collections.Concurrent;
-using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading;
 
-namespace Microsoft.ML.Runtime.Data
+namespace Microsoft.ML.Runtime
 {
     using Stopwatch = System.Diagnostics.Stopwatch;
 
-    public sealed class ConsoleEnvironment : HostEnvironmentBase<ConsoleEnvironment>
+    /// <summary>
+    /// The console environment. As its name suggests, should be limited to those applications that deliberately want
+    /// console functionality.
+    /// </summary>
+    [BestFriend]
+    internal sealed class ConsoleEnvironment : HostEnvironmentBase<ConsoleEnvironment>
     {
         public const string ComponentHistoryKey = "ComponentHistory";
 
@@ -139,7 +140,7 @@ namespace Microsoft.ML.Runtime.Data
                 }
             }
 
-            public void ChannelFinished(Channel channel)
+            public void ChannelDisposed(Channel channel)
             {
                 if (!channel.Verbose)
                     return;
@@ -150,22 +151,7 @@ namespace Microsoft.ML.Runtime.Data
                     WriteAndReturnLinePrefix(MessageSensitivity.None, _out);
                     WriteHeader(_out, channel);
                     _out.WriteLine("Finished.");
-                }
-            }
-
-            public void ChannelDisposed(Channel channel, bool active)
-            {
-                if (!channel.Verbose)
-                    return;
-
-                lock (_lock)
-                {
                     EnsureNewLine();
-                    if (active)
-                    {
-                        PrintMessage(channel,
-                            new ChannelMessage(ChannelMessageKind.Error, MessageSensitivity.None, "The channel was not properly closed."));
-                    }
                     WriteAndReturnLinePrefix(MessageSensitivity.None, _out);
                     WriteHeader(_out, channel);
                     _out.WriteLine("Elapsed {0:c}.", channel.Watch.Elapsed);
@@ -273,7 +259,7 @@ namespace Microsoft.ML.Runtime.Data
 
                 // Progress units.
                 bool first = true;
-                for (int i = 0; i < ev.ProgressEntry.Header.UnitNames.Length; i++)
+                for (int i = 0; i < ev.ProgressEntry.Header.UnitNames.Count; i++)
                 {
                     if (ev.ProgressEntry.Progress[i] == null)
                         continue;
@@ -286,7 +272,7 @@ namespace Microsoft.ML.Runtime.Data
                 }
 
                 // Metrics.
-                for (int i = 0; i < ev.ProgressEntry.Header.MetricNames.Length; i++)
+                for (int i = 0; i < ev.ProgressEntry.Header.MetricNames.Count; i++)
                 {
                     if (ev.ProgressEntry.Metrics[i] == null)
                         continue;
@@ -339,19 +325,15 @@ namespace Microsoft.ML.Runtime.Data
                 Root._consoleWriter.ChannelStarted(this);
             }
 
-            public override void Done()
+            protected override void Dispose(bool disposing)
             {
-                Watch.Stop();
-                Root._consoleWriter.ChannelFinished(this);
-                base.Done();
-            }
-
-            protected override void DisposeCore()
-            {
-                if (IsActive)
+                if(disposing)
+                {
                     Watch.Stop();
-                Root._consoleWriter.ChannelDisposed(this, IsActive);
-                base.DisposeCore();
+                    Root._consoleWriter.ChannelDisposed(this);
+                }
+
+                base.Dispose(disposing);
             }
         }
 
@@ -364,13 +346,12 @@ namespace Microsoft.ML.Runtime.Data
         /// <param name="seed">Random seed. Set to <c>null</c> for a non-deterministic environment.</param>
         /// <param name="verbose">Set to <c>true</c> for fully verbose logging.</param>
         /// <param name="sensitivity">Allowed message sensitivity.</param>
-        /// <param name="conc">Concurrency level. Set to 1 to run single-threaded. Set to 0 to pick automatically.</param>
         /// <param name="outWriter">Text writer to print normal messages to.</param>
         /// <param name="errWriter">Text writer to print error messages to.</param>
         public ConsoleEnvironment(int? seed = null, bool verbose = false,
-            MessageSensitivity sensitivity = MessageSensitivity.All, int conc = 0,
+            MessageSensitivity sensitivity = MessageSensitivity.All,
             TextWriter outWriter = null, TextWriter errWriter = null)
-            : this(RandomUtils.Create(seed), verbose, sensitivity, conc, outWriter, errWriter)
+            : this(RandomUtils.Create(seed), verbose, sensitivity, outWriter, errWriter)
         {
         }
 
@@ -381,13 +362,12 @@ namespace Microsoft.ML.Runtime.Data
         /// <param name="rand">An custom source of randomness to use in the environment.</param>
         /// <param name="verbose">Set to <c>true</c> for fully verbose logging.</param>
         /// <param name="sensitivity">Allowed message sensitivity.</param>
-        /// <param name="conc">Concurrency level. Set to 1 to run single-threaded. Set to 0 to pick automatically.</param>
         /// <param name="outWriter">Text writer to print normal messages to.</param>
         /// <param name="errWriter">Text writer to print error messages to.</param>
-        private ConsoleEnvironment(IRandom rand, bool verbose = false,
-            MessageSensitivity sensitivity = MessageSensitivity.All, int conc = 0,
+        private ConsoleEnvironment(Random rand, bool verbose = false,
+            MessageSensitivity sensitivity = MessageSensitivity.All,
             TextWriter outWriter = null, TextWriter errWriter = null)
-            : base(rand, verbose, conc, nameof(ConsoleEnvironment))
+            : base(rand, verbose, nameof(ConsoleEnvironment))
         {
             Contracts.CheckValueOrNull(outWriter);
             Contracts.CheckValueOrNull(errWriter);
@@ -411,19 +391,13 @@ namespace Microsoft.ML.Runtime.Data
             Root._consoleWriter.PrintMessage(src, msg);
         }
 
-        protected override IFileHandle CreateTempFileCore(IHostEnvironment env, string suffix = null, string prefix = null)
-        {
-            // Prefix with "TLC_".
-            return base.CreateTempFileCore(env, suffix, "TLC_" + prefix);
-        }
-
-        protected override IHost RegisterCore(HostEnvironmentBase<ConsoleEnvironment> source, string shortName, string parentFullName, IRandom rand, bool verbose, int? conc)
+        protected override IHost RegisterCore(HostEnvironmentBase<ConsoleEnvironment> source, string shortName, string parentFullName, Random rand, bool verbose)
         {
             Contracts.AssertValue(rand);
             Contracts.AssertValueOrNull(parentFullName);
             Contracts.AssertNonEmpty(shortName);
             Contracts.Assert(source == this || source is Host);
-            return new Host(source, shortName, parentFullName, rand, verbose, conc);
+            return new Host(source, shortName, parentFullName, rand, verbose);
         }
 
         protected override IChannel CreateCommChannel(ChannelProviderBase parent, string name)
@@ -451,6 +425,11 @@ namespace Microsoft.ML.Runtime.Data
             Contracts.CheckValue(newOutWriter, nameof(newOutWriter));
             Contracts.CheckValue(newErrWriter, nameof(newErrWriter));
             return new OutputRedirector(this, newOutWriter, newErrWriter);
+        }
+
+        internal void ResetProgressChannel()
+        {
+            ProgressTracker.Reset();
         }
 
         private sealed class OutputRedirector : IDisposable
@@ -483,10 +462,10 @@ namespace Microsoft.ML.Runtime.Data
 
         private sealed class Host : HostBase
         {
-            public Host(HostEnvironmentBase<ConsoleEnvironment> source, string shortName, string parentFullName, IRandom rand, bool verbose, int? conc)
-                : base(source, shortName, parentFullName, rand, verbose, conc)
+            public Host(HostEnvironmentBase<ConsoleEnvironment> source, string shortName, string parentFullName, Random rand, bool verbose)
+                : base(source, shortName, parentFullName, rand, verbose)
             {
-                IsCancelled = source.IsCancelled;
+                IsCanceled = source.IsCanceled;
             }
 
             protected override IChannel CreateCommChannel(ChannelProviderBase parent, string name)
@@ -505,9 +484,9 @@ namespace Microsoft.ML.Runtime.Data
                 return new Pipe<TMessage>(parent, name, GetDispatchDelegate<TMessage>());
             }
 
-            protected override IHost RegisterCore(HostEnvironmentBase<ConsoleEnvironment> source, string shortName, string parentFullName, IRandom rand, bool verbose, int? conc)
+            protected override IHost RegisterCore(HostEnvironmentBase<ConsoleEnvironment> source, string shortName, string parentFullName, Random rand, bool verbose)
             {
-                return new Host(source, shortName, parentFullName, rand, verbose, conc);
+                return new Host(source, shortName, parentFullName, rand, verbose);
             }
         }
     }

@@ -2,16 +2,20 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Microsoft.ML.Core.Data;
-
-namespace Microsoft.ML.Runtime.Training
+namespace Microsoft.ML.Trainers
 {
-    public interface ITrainerEstimator<out TTransformer, out TPredictor>: IEstimator<TTransformer>
-        where TTransformer: ISingleFeaturePredictionTransformer<TPredictor>
-        where TPredictor: IPredictor
+    /// <summary>
+    /// Interface for the Trainer Estimator.
+    /// </summary>
+    /// <typeparam name="TTransformer">The type of the transformer returned by the estimator.</typeparam>
+    /// <typeparam name="TModel">The type of the model parameters.</typeparam>
+    public interface ITrainerEstimator<out TTransformer, out TModel> : IEstimator<TTransformer>
+        where TTransformer : ISingleFeaturePredictionTransformer<TModel>
+        where TModel : class
     {
+        /// <summary>
+        /// Gets the <see cref="TrainerInfo"/> information about the trainer.
+        /// </summary>
         TrainerInfo Info { get; }
-
-        PredictionKind PredictionKind { get; }
     }
 }

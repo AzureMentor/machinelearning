@@ -2,10 +2,9 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using System.Collections.Generic;
-using Microsoft.ML.Runtime.Data;
+using Microsoft.ML.Data;
 
-namespace Microsoft.ML.Runtime
+namespace Microsoft.ML
 {
     // REVIEW: Would be nice if the registration under SignatureTrainer were automatic
     // given registration for one of the "sub-class" signatures.
@@ -14,25 +13,34 @@ namespace Microsoft.ML.Runtime
     /// Loadable class signatures for trainers. Typically each trainer should register with
     /// both SignatureTrainer and SignatureXxxTrainer where Xxx is the prediction kind.
     /// </summary>
-    public delegate void SignatureTrainer();
+    [BestFriend]
+    internal delegate void SignatureTrainer();
 
-    public delegate void SignatureBinaryClassifierTrainer();
-    public delegate void SignatureMultiClassClassifierTrainer();
-    public delegate void SignatureRegressorTrainer();
-    public delegate void SignatureMultiOutputRegressorTrainer();
-    public delegate void SignatureRankerTrainer();
-    public delegate void SignatureAnomalyDetectorTrainer();
-    public delegate void SignatureClusteringTrainer();
-    public delegate void SignatureSequenceTrainer();
-    public delegate void SignatureMatrixRecommendingTrainer();
-
-    public delegate void SignatureModelCombiner(PredictionKind kind);
+    [BestFriend]
+    internal delegate void SignatureBinaryClassifierTrainer();
+    [BestFriend]
+    internal delegate void SignatureMulticlassClassifierTrainer();
+    [BestFriend]
+    internal delegate void SignatureRegressorTrainer();
+    [BestFriend]
+    internal delegate void SignatureMultiOutputRegressorTrainer();
+    [BestFriend]
+    internal delegate void SignatureRankerTrainer();
+    [BestFriend]
+    internal delegate void SignatureAnomalyDetectorTrainer();
+    [BestFriend]
+    internal delegate void SignatureClusteringTrainer();
+    [BestFriend]
+    internal delegate void SignatureSequenceTrainer();
+    [BestFriend]
+    internal delegate void SignatureMatrixRecommendingTrainer();
 
     /// <summary>
     /// The base interface for a trainers. Implementors should not implement this interface directly,
     /// but rather implement the more specific <see cref="ITrainer{TPredictor}"/>.
     /// </summary>
-    public interface ITrainer
+    [BestFriend]
+    internal interface ITrainer
     {
         /// <summary>
         /// Auxiliary information about the trainer in terms of its capabilities
@@ -59,7 +67,8 @@ namespace Microsoft.ML.Runtime
     /// and produces a predictor.
     /// </summary>
     /// <typeparam name="TPredictor"> Type of predictor produced</typeparam>
-    public interface ITrainer<out TPredictor> : ITrainer
+    [BestFriend]
+    internal interface ITrainer<out TPredictor> : ITrainer
         where TPredictor : IPredictor
     {
         /// <summary>
@@ -70,7 +79,8 @@ namespace Microsoft.ML.Runtime
         new TPredictor Train(TrainContext context);
     }
 
-    public static class TrainerExtensions
+    [BestFriend]
+    internal static class TrainerExtensions
     {
         /// <summary>
         /// Convenience train extension for the case where one has only a training set with no auxiliary information.
@@ -93,12 +103,5 @@ namespace Microsoft.ML.Runtime
         /// <returns>The trained predictor</returns>
         public static TPredictor Train<TPredictor>(this ITrainer<TPredictor> trainer, RoleMappedData trainData) where TPredictor : IPredictor
             => trainer.Train(new TrainContext(trainData));
-    }
-
-    // A trainer can optionally implement this to indicate it can combine multiple models into a single predictor.
-    public interface IModelCombiner<TModel, TPredictor>
-        where TPredictor : IPredictor
-    {
-        TPredictor CombineModels(IEnumerable<TModel> models);
     }
 }

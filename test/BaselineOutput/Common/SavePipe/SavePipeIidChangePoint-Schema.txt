@@ -1,0 +1,54 @@
+---- BoundLoader ----
+1 columns:
+  Features: Single
+---- SequentialDataTransform ----
+2 columns:
+  Features: Single
+  Anomaly: Vector<Double, 4>
+    Metadata 'SlotNames': Vector<String, 4>: Length=4, Count=4
+      [0] 'Alert', [1] 'Raw Score', [2] 'P-Value Score', [3] 'Martingale Score'
+---- RowToRowMapperTransform ----
+3 columns:
+  Features: Single
+  Anomaly: Vector<Double, 4>
+    Metadata 'SlotNames': Vector<String, 4>: Length=4, Count=4
+      [0] 'Alert', [1] 'Raw Score', [2] 'P-Value Score', [3] 'Martingale Score'
+  fAnomaly: Vector<Single, 4>
+    Metadata 'SlotNames': Vector<String, 4>: Length=4, Count=4
+      [0] 'Alert', [1] 'Raw Score', [2] 'P-Value Score', [3] 'Martingale Score'
+---- SequentialDataTransform ----
+4 columns:
+  Features: Single
+  Anomaly: Vector<Double, 4>
+    Metadata 'SlotNames': Vector<String, 4>: Length=4, Count=4
+      [0] 'Alert', [1] 'Raw Score', [2] 'P-Value Score', [3] 'Martingale Score'
+  fAnomaly: Vector<Single, 4>
+    Metadata 'SlotNames': Vector<String, 4>: Length=4, Count=4
+      [0] 'Alert', [1] 'Raw Score', [2] 'P-Value Score', [3] 'Martingale Score'
+  Anomaly2: Vector<Double, 4>
+    Metadata 'SlotNames': Vector<String, 4>: Length=4, Count=4
+      [0] 'Alert', [1] 'Raw Score', [2] 'P-Value Score', [3] 'Martingale Score'
+---- RowToRowMapperTransform ----
+5 columns:
+  Features: Single
+  Anomaly: Vector<Double, 4>
+    Metadata 'SlotNames': Vector<String, 4>: Length=4, Count=4
+      [0] 'Alert', [1] 'Raw Score', [2] 'P-Value Score', [3] 'Martingale Score'
+  fAnomaly: Vector<Single, 4>
+    Metadata 'SlotNames': Vector<String, 4>: Length=4, Count=4
+      [0] 'Alert', [1] 'Raw Score', [2] 'P-Value Score', [3] 'Martingale Score'
+  Anomaly2: Vector<Double, 4>
+    Metadata 'SlotNames': Vector<String, 4>: Length=4, Count=4
+      [0] 'Alert', [1] 'Raw Score', [2] 'P-Value Score', [3] 'Martingale Score'
+  fAnomaly2: Vector<Single, 4>
+    Metadata 'SlotNames': Vector<String, 4>: Length=4, Count=4
+      [0] 'Alert', [1] 'Raw Score', [2] 'P-Value Score', [3] 'Martingale Score'
+---- SelectColumnsDataTransform ----
+3 columns:
+  Features: Single
+  fAnomaly: Vector<Single, 4>
+    Metadata 'SlotNames': Vector<String, 4>: Length=4, Count=4
+      [0] 'Alert', [1] 'Raw Score', [2] 'P-Value Score', [3] 'Martingale Score'
+  fAnomaly2: Vector<Single, 4>
+    Metadata 'SlotNames': Vector<String, 4>: Length=4, Count=4
+      [0] 'Alert', [1] 'Raw Score', [2] 'P-Value Score', [3] 'Martingale Score'

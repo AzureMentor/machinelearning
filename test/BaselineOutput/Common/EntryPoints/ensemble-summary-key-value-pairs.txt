@@ -1,0 +1,64 @@
+Partition model 0 summary:
+Linear Binary Classification Predictor non-zero weights
+(Bias): -5.120674
+Features.bare_nuclei: 2.435889
+Features.thickness: 2.353567
+Features.uniform_shape: 1.944249
+Features.uniform_size: 1.786538
+Features.bland_chromatin: 1.611417
+Features.adhesion: 1.38072
+Features.normal_nucleoli: 1.345759
+Features.epit_size: 1.083109
+Cat.1: -0.7715381
+Count of training examples: 521
+Residual Deviance: 98.29433
+Null Deviance: 669.0935
+AIC: 118.2943
+(Bias): System.Single[]
+Features.thickness: System.Single[]
+Features.bare_nuclei: System.Single[]
+Features.uniform_shape: System.Single[]
+Features.uniform_size: System.Single[]
+Features.bland_chromatin: System.Single[]
+Features.adhesion: System.Single[]
+Features.normal_nucleoli: System.Single[]
+Features.epit_size: System.Single[]
+Cat.1: System.Single[]
+Partition model 1 summary:
+Per-feature gain summary for the boosted tree ensemble:
+Features.uniform_size: 1
+Features.bare_nuclei: 0.261851950948993
+Features.normal_nucleoli: 0.171821243048215
+Features.epit_size: 0.153505802680442
+Features.bland_chromatin: 0.138164395549383
+Partition model 2 summary:
+Linear Binary Classification Predictor non-zero weights
+(Bias): -4.860323
+Features.bare_nuclei: 3.16846
+Features.thickness: 2.143086
+Features.uniform_shape: 1.711214
+Features.normal_nucleoli: 1.519048
+Features.uniform_size: 1.494185
+Features.bland_chromatin: 1.386847
+Features.adhesion: 1.383187
+Features.epit_size: 0.8832003
+Cat.1: -0.8226236
+Count of training examples: 520
+Residual Deviance: 94.19695
+Null Deviance: 673.3445
+AIC: 114.1969
+(Bias): System.Single[]
+Features.bare_nuclei: System.Single[]
+Features.thickness: System.Single[]
+Features.uniform_shape: System.Single[]
+Features.uniform_size: System.Single[]
+Features.normal_nucleoli: System.Single[]
+Features.bland_chromatin: System.Single[]
+Features.adhesion: System.Single[]
+Features.epit_size: System.Single[]
+Cat.1: System.Single[]
+Partition model 3 summary:
+Per-feature gain summary for the boosted tree ensemble:
+Features.uniform_size: 1
+Features.bare_nuclei: 0.412486071655037
+Features.normal_nucleoli: 0.128397028220685

@@ -8,7 +8,7 @@
 // manually in script form (to help debug it and also check that F# scripting works with ML.NET).
 // Running as a script requires using F# Interactive on Windows, and the explicit references below.  
 // The references would normally be created by a package loader for the scripting 
-// environment, e.g. see https://github.com/isaacabraham/ml-test-experiment/, but 
+// environment, for example, see https://github.com/isaacabraham/ml-test-experiment/, but 
 // here we list them explicitly to avoid the dependency on a package loader,
 //
 // You should build Microsoft.ML.FSharp.Tests in Debug mode for framework net461 
@@ -33,12 +33,11 @@
 #r @"../../bin/AnyCPU.Debug/Microsoft.ML.FSharp.Tests/net461/Microsoft.ML.Api.dll" 
 #r @"../../bin/AnyCPU.Debug/Microsoft.ML.FSharp.Tests/net461/Microsoft.ML.Sweeper.dll" 
 #r @"../../bin/AnyCPU.Debug/Microsoft.ML.FSharp.Tests/net461/Microsoft.ML.dll" 
-#r @"../../bin/AnyCPU.Debug/Microsoft.ML.FSharp.Tests/net461/Microsoft.ML.StandardLearners.dll" 
+#r @"../../bin/AnyCPU.Debug/Microsoft.ML.FSharp.Tests/net461/Microsoft.ML.StandardTrainers.dll" 
 #r @"../../bin/AnyCPU.Debug/Microsoft.ML.FSharp.Tests/net461/Microsoft.ML.PipelineInference.dll" 
 #r @"../../bin/AnyCPU.Debug/Microsoft.ML.FSharp.Tests/net461/xunit.core.dll" 
 #r @"../../bin/AnyCPU.Debug/Microsoft.ML.FSharp.Tests/net461/xunit.assert.dll" 
 #r "System" 
-#r "System.ComponentModel.Composition" 
 #r "System.Core" 
 #r "System.Xml.Linq" 
 
@@ -53,22 +52,19 @@
 #if !INTERACTIVE
 namespace Microsoft.ML.FSharp.Tests
 #endif
-
+#nowarn "44"
 open System
 open Microsoft.ML
-open Microsoft.ML.Legacy.Data
-open Microsoft.ML.Legacy.Transforms
-open Microsoft.ML.Legacy.Trainers
-open Microsoft.ML.Runtime.Api
+open Microsoft.ML.Data
 open Xunit
 
 module SmokeTest1 = 
 
     type SentimentData() =
-        [<Column(ordinal = "0"); DefaultValue>]
+        [<LoadColumn(fieldIndex = 0); ColumnName("Label"); DefaultValue>]
+        val mutable Sentiment : bool
+        [<LoadColumn(fieldIndex =1); DefaultValue>]
         val mutable SentimentText : string
-        [<Column(ordinal = "1", name = "Label"); DefaultValue>]
-        val mutable Sentiment : float32
 
     type SentimentPrediction() =
         [<ColumnName("PredictedLabel"); DefaultValue>]
@@ -77,52 +73,23 @@ module SmokeTest1 =
     [<Fact>]
     let ``FSharp-Sentiment-Smoke-Test`` () =
 
-        // See https://github.com/dotnet/machinelearning/issues/401: forces the loading of ML.NET component assemblies
-        let _load  =
-            [ typeof<Microsoft.ML.Runtime.Transforms.TextAnalytics>; 
-              typeof<Microsoft.ML.Runtime.FastTree.FastTree> ]
-
         let testDataPath = __SOURCE_DIRECTORY__ + @"/../data/wikipedia-detox-250-line-data.tsv"
 
-        let pipeline = Legacy.LearningPipeline()
+        let ml = MLContext(seed = new System.Nullable<int>(1))
+        let data = ml.Data.LoadFromTextFile<SentimentData>(testDataPath, hasHeader = true, allowQuoting = true)
 
-        pipeline.Add(
-            TextLoader(testDataPath).CreateFrom<SentimentData>(
-                Arguments = 
-                    TextLoaderArguments(
-                        HasHeader = true,
-                        Column = [| TextLoaderColumn(Name = "Label", 
-                                                     Source = [| TextLoaderRange(0) |], 
-                                                     Type = Nullable (Legacy.Data.DataKind.Num))
-                                    TextLoaderColumn(Name = "SentimentText", 
-                                                     Source = [| TextLoaderRange(1) |], 
-                                                     Type = Nullable (Legacy.Data.DataKind.Text)) |] 
-                    )))
+        let pipeline = ml.Transforms.Text.FeaturizeText("Features", "SentimentText") 
+                        .Append(ml.BinaryClassification.Trainers.FastTree(numberOfLeaves = 5, numberOfTrees = 5))
 
-        pipeline.Add(
-            TextFeaturizer(
-                "Features", [| "SentimentText" |],
-                KeepDiacritics = false,
-                KeepPunctuations = false,
-                TextCase = TextNormalizerTransformCaseNormalizationMode.Lower,
-                OutputTokens = true,
-                VectorNormalizer = TextTransformTextNormKind.L2
-            ))
+        let model = pipeline.Fit(data)
 
-        pipeline.Add(
-            FastTreeBinaryClassifier(
-                NumLeaves = 5, 
-                NumTrees = 5, 
-                MinDocumentsInLeafs = 2
-            ))
-
-        let model = pipeline.Train<SentimentData, SentimentPrediction>()
-
+        let engine = ml.Model.CreatePredictionEngine<SentimentData, SentimentPrediction>(model)
+        
         let predictions =
             [ SentimentData(SentimentText = "This is a gross exaggeration. Nobody is setting a kangaroo court. There was a simple addition.")
               SentimentData(SentimentText = "Sort of ok")
               SentimentData(SentimentText = "Joe versus the Volcano Coffee Company is a great film.") ]
-            |> model.Predict
+            |> List.map engine.Predict
 
         let predictionResults = [ for p in predictions -> p.Sentiment ]
         Assert.Equal<bool list>(predictionResults, [ false; true; true ])
@@ -132,11 +99,11 @@ module SmokeTest2 =
 
     [<CLIMutable>]
     type SentimentData =
-        { [<Column(ordinal = "0")>] 
-          SentimentText : string
-
-          [<Column(ordinal = "1", name = "Label")>] 
-          Sentiment : float32 }
+        { [<LoadColumn(fieldIndex = 0); ColumnName("Label")>] 
+          Sentiment : bool
+          
+          [<LoadColumn(fieldIndex = 1)>] 
+          SentimentText : string }
 
     [<CLIMutable>]
     type SentimentPrediction =
@@ -146,52 +113,23 @@ module SmokeTest2 =
     [<Fact>]
     let ``FSharp-Sentiment-Smoke-Test`` () =
 
-        // See https://github.com/dotnet/machinelearning/issues/401: forces the loading of ML.NET component assemblies
-        let _load  =
-            [ typeof<Microsoft.ML.Runtime.Transforms.TextAnalytics>; 
-              typeof<Microsoft.ML.Runtime.FastTree.FastTree> ]
-
         let testDataPath = __SOURCE_DIRECTORY__ + @"/../data/wikipedia-detox-250-line-data.tsv"
+        
+        let ml = MLContext(seed = new System.Nullable<int>(1))
+        let data = ml.Data.LoadFromTextFile<SentimentData>(testDataPath, hasHeader = true, allowQuoting = true)
 
-        let pipeline = Legacy.LearningPipeline()
+        let pipeline = ml.Transforms.Text.FeaturizeText("Features", "SentimentText") 
+                        .Append(ml.BinaryClassification.Trainers.FastTree(numberOfLeaves = 5, numberOfTrees = 5))
+        
+        let model = pipeline.Fit(data)
 
-        pipeline.Add(
-            TextLoader(testDataPath).CreateFrom<SentimentData>(
-                Arguments = 
-                    TextLoaderArguments(
-                        HasHeader = true,
-                        Column = [| TextLoaderColumn(Name = "Label", 
-                                                     Source = [| TextLoaderRange(0) |], 
-                                                     Type = Nullable (Legacy.Data.DataKind.Num))
-                                    TextLoaderColumn(Name = "SentimentText", 
-                                                     Source = [| TextLoaderRange(1) |], 
-                                                     Type = Nullable (Legacy.Data.DataKind.Text)) |] 
-                    )))
-
-        pipeline.Add(
-            TextFeaturizer(
-                "Features", [| "SentimentText" |],
-                KeepDiacritics = false,
-                KeepPunctuations = false,
-                TextCase = TextNormalizerTransformCaseNormalizationMode.Lower,
-                OutputTokens = true,
-                VectorNormalizer = TextTransformTextNormKind.L2
-            ))
-
-        pipeline.Add(
-            FastTreeBinaryClassifier(
-                NumLeaves = 5, 
-                NumTrees = 5, 
-                MinDocumentsInLeafs = 2
-            ))
-
-        let model = pipeline.Train<SentimentData, SentimentPrediction>()
+        let engine = ml.Model.CreatePredictionEngine<SentimentData, SentimentPrediction>(model)
 
         let predictions =
-            [ { SentimentText = "This is a gross exaggeration. Nobody is setting a kangaroo court. There was a simple addition."; Sentiment = 0.0f }
-              { SentimentText = "Sort of ok"; Sentiment = 0.0f }
-              { SentimentText = "Joe versus the Volcano Coffee Company is a great film."; Sentiment = 0.0f } ]
-            |> model.Predict
+            [ { SentimentText = "This is a gross exaggeration. Nobody is setting a kangaroo court. There was a simple addition."; Sentiment = false }
+              { SentimentText = "Sort of ok"; Sentiment = false }
+              { SentimentText = "Joe versus the Volcano Coffee Company is a great film."; Sentiment = false } ]
+            |> List.map engine.Predict
 
         let predictionResults = [ for p in predictions -> p.Sentiment ]
         Assert.Equal<bool list>(predictionResults, [ false; true; true ])
@@ -199,11 +137,11 @@ module SmokeTest2 =
 module SmokeTest3 = 
 
     type SentimentData() =
-        [<Column(ordinal = "0")>] 
-        member val SentimentText = "".AsMemory() with get, set
+        [<LoadColumn(fieldIndex = 0); ColumnName("Label")>] 
+        member val Sentiment = false with get, set
 
-        [<Column(ordinal = "1", name = "Label")>] 
-        member val Sentiment = 0.0 with get, set
+        [<LoadColumn(fieldIndex = 1)>] 
+        member val SentimentText = "".AsMemory() with get, set
 
     type SentimentPrediction() =
         [<ColumnName("PredictedLabel")>] 
@@ -212,52 +150,23 @@ module SmokeTest3 =
     [<Fact>]
     let ``FSharp-Sentiment-Smoke-Test`` () =
 
-        // See https://github.com/dotnet/machinelearning/issues/401: forces the loading of ML.NET component assemblies
-        let _load  =
-            [ typeof<Microsoft.ML.Runtime.Transforms.TextAnalytics>; 
-              typeof<Microsoft.ML.Runtime.FastTree.FastTree> ]
-
         let testDataPath = __SOURCE_DIRECTORY__ + @"/../data/wikipedia-detox-250-line-data.tsv"
 
-        let pipeline = Legacy.LearningPipeline()
+        let ml = MLContext(seed = new System.Nullable<int>(1))
+        let data = ml.Data.LoadFromTextFile<SentimentData>(testDataPath, hasHeader = true, allowQuoting = true)
 
-        pipeline.Add(
-            TextLoader(testDataPath).CreateFrom<SentimentData>(
-                Arguments = 
-                    TextLoaderArguments(
-                        HasHeader = true,
-                        Column = [| TextLoaderColumn(Name = "Label", 
-                                                     Source = [| TextLoaderRange(0) |], 
-                                                     Type = Nullable (Legacy.Data.DataKind.Num))
-                                    TextLoaderColumn(Name = "SentimentText", 
-                                                     Source = [| TextLoaderRange(1) |], 
-                                                     Type = Nullable (Legacy.Data.DataKind.Text)) |] 
-                    )))
+        let pipeline = ml.Transforms.Text.FeaturizeText("Features", "SentimentText") 
+                        .Append(ml.BinaryClassification.Trainers.FastTree(numberOfLeaves = 5, numberOfTrees = 5))
+        
+        let model = pipeline.Fit(data)
 
-        pipeline.Add(
-            TextFeaturizer(
-                "Features", [| "SentimentText" |],
-                KeepDiacritics = false,
-                KeepPunctuations = false,
-                TextCase = TextNormalizerTransformCaseNormalizationMode.Lower,
-                OutputTokens = true,
-                VectorNormalizer = TextTransformTextNormKind.L2
-            ))
-
-        pipeline.Add(
-            FastTreeBinaryClassifier(
-                NumLeaves = 5, 
-                NumTrees = 5, 
-                MinDocumentsInLeafs = 2
-            ))
-
-        let model = pipeline.Train<SentimentData, SentimentPrediction>()
+        let engine = ml.Model.CreatePredictionEngine<SentimentData, SentimentPrediction>(model)
 
         let predictions =
             [ SentimentData(SentimentText = "This is a gross exaggeration. Nobody is setting a kangaroo court. There was a simple addition.".AsMemory())
               SentimentData(SentimentText = "Sort of ok".AsMemory())
               SentimentData(SentimentText = "Joe versus the Volcano Coffee Company is a great film.".AsMemory()) ]
-            |> model.Predict
+            |> List.map engine.Predict
 
         let predictionResults = [ for p in predictions -> p.Sentiment ]
         Assert.Equal<bool list>(predictionResults, [ false; true; true ])

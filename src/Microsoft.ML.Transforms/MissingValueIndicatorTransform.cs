@@ -2,15 +2,14 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Float = System.Single;
-
 using System;
 using System.Text;
+using Microsoft.ML;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Data;
+using Microsoft.ML.Internal.Utilities;
 using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Runtime.Model;
+using Microsoft.ML.Transforms;
 
 [assembly: LoadableClass(typeof(MissingValueIndicatorTransform), typeof(MissingValueIndicatorTransform.Arguments), typeof(SignatureDataTransform),
     "", "MissingValueIndicatorTransform", "MissingValueTransform", "MissingTransform", "Missing")]
@@ -18,13 +17,13 @@ using Microsoft.ML.Runtime.Model;
 [assembly: LoadableClass(typeof(MissingValueIndicatorTransform), null, typeof(SignatureLoadDataTransform),
     "Missing Value Indicator Transform", MissingValueIndicatorTransform.LoaderSignature, "MissingFeatureFunction")]
 
-namespace Microsoft.ML.Runtime.Data
+namespace Microsoft.ML.Transforms
 {
-    public sealed class MissingValueIndicatorTransform : OneToOneTransformBase
+    internal sealed class MissingValueIndicatorTransform : OneToOneTransformBase
     {
         public sealed class Column : OneToOneColumn
         {
-            public static Column Parse(string str)
+            internal static Column Parse(string str)
             {
                 Contracts.AssertNonEmpty(str);
 
@@ -34,7 +33,7 @@ namespace Microsoft.ML.Runtime.Data
                 return null;
             }
 
-            public bool TryUnparse(StringBuilder sb)
+            internal bool TryUnparse(StringBuilder sb)
             {
                 Contracts.AssertValue(sb);
                 return TryUnparseCore(sb);
@@ -43,8 +42,8 @@ namespace Microsoft.ML.Runtime.Data
 
         public sealed class Arguments
         {
-            [Argument(ArgumentType.Multiple | ArgumentType.Required, HelpText = "New column definition(s) (optional form: name:src)", ShortName = "col", SortOrder = 1)]
-            public Column[] Column;
+            [Argument(ArgumentType.Multiple | ArgumentType.Required, HelpText = "New column definition(s) (optional form: name:src)", Name = "Column", ShortName = "col", SortOrder = 1)]
+            public Column[] Columns;
         }
 
         public const string LoaderSignature = "MissingIndicatorFunction";
@@ -68,17 +67,17 @@ namespace Microsoft.ML.Runtime.Data
         private const string IndicatorSuffix = "_Indicator";
 
         // The output column types, parallel to Infos.
-        private readonly VectorType[] _types;
+        private readonly VectorDataViewType[] _types;
 
         /// <summary>
         /// Public constructor corresponding to SignatureDataTransform.
         /// </summary>
         public MissingValueIndicatorTransform(IHostEnvironment env, Arguments args, IDataView input)
-            : base(env, RegistrationName, Contracts.CheckRef(args, nameof(args)).Column,
+            : base(env, RegistrationName, Contracts.CheckRef(args, nameof(args)).Columns,
                 input, TestIsFloatItem)
         {
             Host.AssertNonEmpty(Infos);
-            Host.Assert(Infos.Length == Utils.Size(args.Column));
+            Host.Assert(Infos.Length == Utils.Size(args.Columns));
 
             _types = GetTypesAndMetadata();
         }
@@ -110,12 +109,12 @@ namespace Microsoft.ML.Runtime.Data
                     // int: sizeof(Float)
                     // <remainder handled in ctors>
                     int cbFloat = ctx.Reader.ReadInt32();
-                    ch.CheckDecode(cbFloat == sizeof(Float));
+                    ch.CheckDecode(cbFloat == sizeof(float));
                     return new MissingValueIndicatorTransform(h, ctx, input);
                 });
         }
 
-        public override void Save(ModelSaveContext ctx)
+        private protected override void SaveModel(ModelSaveContext ctx)
         {
             Host.CheckValue(ctx, nameof(ctx));
             ctx.CheckAtModel();
@@ -124,34 +123,33 @@ namespace Microsoft.ML.Runtime.Data
             // *** Binary format ***
             // int: sizeof(Float)
             // <base>
-            ctx.Writer.Write(sizeof(Float));
+            ctx.Writer.Write(sizeof(float));
             SaveBase(ctx);
         }
 
-        private VectorType[] GetTypesAndMetadata()
+        private VectorDataViewType[] GetTypesAndMetadata()
         {
             var md = Metadata;
-            var types = new VectorType[Infos.Length];
+            var types = new VectorDataViewType[Infos.Length];
             for (int iinfo = 0; iinfo < Infos.Length; iinfo++)
             {
                 var type = Infos[iinfo].TypeSrc;
 
                 // This ensures that our feature count doesn't overflow.
-                Host.Check(type.ValueCount < int.MaxValue / 2);
+                Host.Check(type.GetValueCount() < int.MaxValue / 2);
 
-                if (!type.IsVector)
-                    types[iinfo] = new VectorType(NumberType.Float, 2);
+                if (!(type is VectorDataViewType vectorType))
+                    types[iinfo] = new VectorDataViewType(NumberDataViewType.Single, 2);
                 else
                 {
-                    types[iinfo] = new VectorType(NumberType.Float, type.AsVector, 2);
+                    types[iinfo] = new VectorDataViewType(NumberDataViewType.Single, vectorType.Dimensions.Add(2));
 
                     // Produce slot names metadata iff the source has (valid) slot names.
-                    ColumnType typeNames;
-                    if (!type.IsKnownSizeVector ||
-                        (typeNames = Source.Schema.GetMetadataTypeOrNull(MetadataUtils.Kinds.SlotNames,
-                            Infos[iinfo].Source)) == null ||
-                        typeNames.VectorSize != type.VectorSize ||
-                        !typeNames.ItemType.IsText)
+                    VectorDataViewType typeNames;
+                    if (!vectorType.IsKnownSize ||
+                        (typeNames = Source.Schema[Infos[iinfo].Source].Annotations.Schema.GetColumnOrNull(AnnotationUtils.Kinds.SlotNames)?.Type as VectorDataViewType) == null ||
+                        typeNames.Size != vectorType.Size ||
+                        !(typeNames.ItemType is TextDataViewType))
                     {
                         continue;
                     }
@@ -160,15 +158,15 @@ namespace Microsoft.ML.Runtime.Data
                 // Add slot names metadata.
                 using (var bldr = md.BuildMetadata(iinfo))
                 {
-                    bldr.AddGetter<VBuffer<ReadOnlyMemory<char>>>(MetadataUtils.Kinds.SlotNames,
-                        MetadataUtils.GetNamesType(types[iinfo].VectorSize), GetSlotNames);
+                    bldr.AddGetter<VBuffer<ReadOnlyMemory<char>>>(AnnotationUtils.Kinds.SlotNames,
+                        AnnotationUtils.GetNamesType(types[iinfo].Size), GetSlotNames);
                 }
             }
             md.Seal();
             return types;
         }
 
-        protected override ColumnType GetColumnTypeCore(int iinfo)
+        protected override DataViewType GetColumnTypeCore(int iinfo)
         {
             Host.Assert(0 <= iinfo & iinfo < Infos.Length);
             return _types[iinfo];
@@ -178,39 +176,37 @@ namespace Microsoft.ML.Runtime.Data
         {
             Host.Assert(0 <= iinfo && iinfo < Infos.Length);
 
-            int size = _types[iinfo].VectorSize;
+            int size = _types[iinfo].Size;
             if (size == 0)
-                throw MetadataUtils.ExceptGetMetadata();
+                throw AnnotationUtils.ExceptGetAnnotation();
 
-            var values = dst.Values;
-            if (Utils.Size(values) < size)
-                values = new ReadOnlyMemory<char>[size];
+            var editor = VBufferEditor.Create(ref dst, size);
 
             var type = Infos[iinfo].TypeSrc;
-            if (!type.IsVector)
+            if (!(type is VectorDataViewType srcVectorType))
             {
-                Host.Assert(_types[iinfo].VectorSize == 2);
-                var columnName = Source.Schema.GetColumnName(Infos[iinfo].Source);
-                values[0] = columnName.AsMemory();
-                values[1] = (columnName + IndicatorSuffix).AsMemory();
+                Host.Assert(_types[iinfo].Size == 2);
+                var columnName = Source.Schema[Infos[iinfo].Source].Name;
+                editor.Values[0] = columnName.AsMemory();
+                editor.Values[1] = (columnName + IndicatorSuffix).AsMemory();
             }
             else
             {
-                Host.Assert(type.IsKnownSizeVector);
-                Host.Assert(size == 2 * type.VectorSize);
+                Host.Assert(srcVectorType.IsKnownSize);
+                Host.Assert(size == 2 * srcVectorType.Size);
 
                 // REVIEW: Do we need to verify that there is metadata or should we just call GetMetadata?
-                var typeNames = Source.Schema.GetMetadataTypeOrNull(MetadataUtils.Kinds.SlotNames, Infos[iinfo].Source);
-                if (typeNames == null || typeNames.VectorSize != type.VectorSize || !typeNames.ItemType.IsText)
-                    throw MetadataUtils.ExceptGetMetadata();
+                var typeNames = Source.Schema[Infos[iinfo].Source].Annotations.Schema.GetColumnOrNull(AnnotationUtils.Kinds.SlotNames)?.Type as VectorDataViewType;
+                if (typeNames == null || typeNames.Size != srcVectorType.Size || !(typeNames.ItemType is TextDataViewType))
+                    throw AnnotationUtils.ExceptGetAnnotation();
 
                 var names = default(VBuffer<ReadOnlyMemory<char>>);
-                Source.Schema.GetMetadata(MetadataUtils.Kinds.SlotNames, Infos[iinfo].Source, ref names);
+                Source.Schema[Infos[iinfo].Source].Annotations.GetValue(AnnotationUtils.Kinds.SlotNames, ref names);
 
                 // We both assert and check. If this fails, there is a bug somewhere (possibly in this code
                 // but more likely in the implementation of Base. On the other hand, we don't want to proceed
                 // if we've received garbage.
-                Host.Check(names.Length == type.VectorSize, "Unexpected slot name vector size");
+                Host.Check(names.Length == srcVectorType.Size, "Unexpected slot name vector size");
 
                 var sb = new StringBuilder();
                 int slot = 0;
@@ -229,28 +225,28 @@ namespace Microsoft.ML.Runtime.Data
                     sb.Append(IndicatorSuffix);
                     var str = sb.ToString();
 
-                    values[slot++] = str.AsMemory().Slice(0, len);
-                    values[slot++] = str.AsMemory();
+                    editor.Values[slot++] = str.AsMemory().Slice(0, len);
+                    editor.Values[slot++] = str.AsMemory();
                 }
                 Host.Assert(slot == size);
             }
 
-            dst = new VBuffer<ReadOnlyMemory<char>>(size, values, dst.Indices);
+            dst = editor.Commit();
         }
 
-        protected override Delegate GetGetterCore(IChannel ch, IRow input, int iinfo, out Action disposer)
+        protected override Delegate GetGetterCore(IChannel ch, DataViewRow input, int iinfo, out Action disposer)
         {
             Host.AssertValueOrNull(ch);
             Host.AssertValue(input);
             Host.Assert(0 <= iinfo && iinfo < Infos.Length);
             disposer = null;
 
-            ValueGetter<VBuffer<Float>> del;
-            if (Infos[iinfo].TypeSrc.IsVector)
+            ValueGetter<VBuffer<float>> del;
+            if (Infos[iinfo].TypeSrc is VectorDataViewType)
             {
-                var getSrc = GetSrcGetter<VBuffer<Float>>(input, iinfo);
+                var getSrc = GetSrcGetter<VBuffer<float>>(input, iinfo);
                 del =
-                    (ref VBuffer<Float> dst) =>
+                    (ref VBuffer<float> dst) =>
                     {
                         getSrc(ref dst);
                         FillValues(Host, ref dst);
@@ -258,11 +254,11 @@ namespace Microsoft.ML.Runtime.Data
             }
             else
             {
-                var getSrc = GetSrcGetter<Float>(input, iinfo);
+                var getSrc = GetSrcGetter<float>(input, iinfo);
                 del =
-                    (ref VBuffer<Float> dst) =>
+                    (ref VBuffer<float> dst) =>
                     {
-                        var src = default(Float);
+                        var src = default(float);
                         getSrc(ref src);
                         FillValues(src, ref dst);
                         Host.Assert(dst.Length == 2);
@@ -271,68 +267,57 @@ namespace Microsoft.ML.Runtime.Data
             return del;
         }
 
-        private static void FillValues(Float input, ref VBuffer<Float> result)
+        private static void FillValues(float input, ref VBuffer<float> result)
         {
-            var values = result.Values;
-            var indices = result.Indices;
-
             if (input == 0)
             {
-                result = new VBuffer<Float>(2, 0, values, indices);
+                VBufferUtils.Resize(ref result, 2, 0);
                 return;
             }
 
-            if (Utils.Size(values) < 1)
-                values = new Float[1];
-            if (Utils.Size(indices) < 1)
-                indices = new int[1];
-
-            if (Float.IsNaN(input))
+            var editor = VBufferEditor.Create(ref result, 2, 1);
+            if (float.IsNaN(input))
             {
-                values[0] = 1;
-                indices[0] = 1;
+                editor.Values[0] = 1;
+                editor.Indices[0] = 1;
             }
             else
             {
-                values[0] = input;
-                indices[0] = 0;
+                editor.Values[0] = input;
+                editor.Indices[0] = 0;
             }
 
-            result = new VBuffer<Float>(2, 1, values, indices);
+            result = editor.Commit();
         }
 
         // This converts in place.
-        private static void FillValues(IExceptionContext ectx, ref VBuffer<Float> buffer)
+        private static void FillValues(IExceptionContext ectx, ref VBuffer<float> buffer)
         {
             int size = buffer.Length;
             ectx.Check(0 <= size & size < int.MaxValue / 2);
 
-            int count = buffer.Count;
-            var values = buffer.Values;
-            var indices = buffer.Indices;
+            var values = buffer.GetValues();
+            var editor = VBufferEditor.Create(ref buffer, size * 2, values.Length);
             int iivDst = 0;
-            if (count >= size)
+            if (buffer.IsDense)
             {
                 // Currently, it's dense. We always produce sparse.
-                ectx.Assert(Utils.Size(values) >= size);
-                if (Utils.Size(indices) < size)
-                    indices = new int[size];
 
-                for (int ivSrc = 0; ivSrc < count; ivSrc++)
+                for (int ivSrc = 0; ivSrc < values.Length; ivSrc++)
                 {
                     ectx.Assert(iivDst <= ivSrc);
                     var val = values[ivSrc];
                     if (val == 0)
                         continue;
-                    if (Float.IsNaN(val))
+                    if (float.IsNaN(val))
                     {
-                        values[iivDst] = 1;
-                        indices[iivDst] = 2 * ivSrc + 1;
+                        editor.Values[iivDst] = 1;
+                        editor.Indices[iivDst] = 2 * ivSrc + 1;
                     }
                     else
                     {
-                        values[iivDst] = val;
-                        indices[iivDst] = 2 * ivSrc;
+                        editor.Values[iivDst] = val;
+                        editor.Indices[iivDst] = 2 * ivSrc;
                     }
                     iivDst++;
                 }
@@ -340,11 +325,10 @@ namespace Microsoft.ML.Runtime.Data
             else
             {
                 // Currently, it's sparse.
-                ectx.Assert(Utils.Size(values) >= count);
-                ectx.Assert(Utils.Size(indices) >= count);
 
+                var indices = buffer.GetIndices();
                 int ivPrev = -1;
-                for (int iivSrc = 0; iivSrc < count; iivSrc++)
+                for (int iivSrc = 0; iivSrc < values.Length; iivSrc++)
                 {
                     ectx.Assert(iivDst <= iivSrc);
                     var val = values[iivSrc];
@@ -353,22 +337,22 @@ namespace Microsoft.ML.Runtime.Data
                     int iv = indices[iivSrc];
                     ectx.Assert(ivPrev < iv & iv < size);
                     ivPrev = iv;
-                    if (Float.IsNaN(val))
+                    if (float.IsNaN(val))
                     {
-                        values[iivDst] = 1;
-                        indices[iivDst] = 2 * iv + 1;
+                        editor.Values[iivDst] = 1;
+                        editor.Indices[iivDst] = 2 * iv + 1;
                     }
                     else
                     {
-                        values[iivDst] = val;
-                        indices[iivDst] = 2 * iv;
+                        editor.Values[iivDst] = val;
+                        editor.Indices[iivDst] = 2 * iv;
                     }
                     iivDst++;
                 }
             }
 
-            ectx.Assert(0 <= iivDst & iivDst <= count);
-            buffer = new VBuffer<Float>(size * 2, iivDst, values, indices);
+            ectx.Assert(0 <= iivDst & iivDst <= values.Length);
+            buffer = editor.CommitTruncated(iivDst);
         }
     }
 }

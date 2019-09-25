@@ -3,10 +3,11 @@
 // See the LICENSE file in the project root for more information.
 
 using System.Collections.Generic;
+using Microsoft.ML.Runtime;
 
-namespace Microsoft.ML.Runtime.FastTree.Internal
+namespace Microsoft.ML.Trainers.FastTree
 {
-    public abstract class DcgPermutationComparer : IComparer<int>
+    internal abstract class DcgPermutationComparer : IComparer<int>
     {
         public abstract int Compare(int i, int j);
 
@@ -19,7 +20,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
         public abstract int LabelsOffset { set; }
     }
 
-    public static class DcgPermutationComparerFactory
+    internal static class DcgPermutationComparerFactory
     {
         public static DcgPermutationComparer GetDcgPermutationFactory(string name)
         {
@@ -42,18 +43,20 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
     /// <summary>
     /// Compares two integers that are indices into a vector of doubles.
     /// </summary>
-    public class DescendingStablePessimisticPermutationComparer : DescendingStablePermutationComparer
+    internal class DescendingStablePessimisticPermutationComparer : DescendingStablePermutationComparer
     {
 #pragma warning disable MSML_GeneralName // The naming is the least of this class's problems. A setter with no getter??
         protected short[] _labels;
         protected int _labelsOffset;
 #pragma warning restore MSML_GeneralName
 
-        public override short[] Labels {
+        public override short[] Labels
+        {
             set { _labels = value; }
         }
 
-        public override int LabelsOffset {
+        public override int LabelsOffset
+        {
             set { _labelsOffset = value; }
         }
 
@@ -74,7 +77,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
     /// <summary>
     /// Compares two integers that are indices into a vector of doubles.
     /// </summary>
-    public class DescendingStablePermutationComparer : DcgPermutationComparer
+    internal class DescendingStablePermutationComparer : DcgPermutationComparer
     {
 #pragma warning disable MSML_GeneralName // The naming is the least of this class's problems. A setter with no getter??
         protected double[] _scores;
@@ -99,7 +102,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
         }
     }
 
-    public class DescendingReversePermutationComparer : DescendingStablePermutationComparer
+    internal class DescendingReversePermutationComparer : DescendingStablePermutationComparer
     {
         public override int Compare(int i, int j)
         {
@@ -111,7 +114,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
         }
     }
 
-    public class DescendingDotNetPermutationComparer : DescendingStablePermutationComparer
+    internal class DescendingDotNetPermutationComparer : DescendingStablePermutationComparer
     {
         public override int Compare(int i, int j)
         {
@@ -122,7 +125,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
     /// <summary>
     /// Implements an HRS based comparer to sort the ranking results for the first N results.
     /// </summary>
-    public class DescendingStableIdealComparer : IComparer<int>
+    internal class DescendingStableIdealComparer : IComparer<int>
     {
         /// <summary>
         /// Creates an instance of the DescendingStableIdealComparer for the TOP N query/URL pairs

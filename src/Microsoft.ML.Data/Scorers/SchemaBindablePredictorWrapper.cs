@@ -2,21 +2,18 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-#pragma warning disable 420 // volatile with Interlocked.CompareExchange
-
-using Float = System.Single;
-
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Reflection;
+using Microsoft.ML;
+using Microsoft.ML.Data;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Model;
+using Microsoft.ML.Model.OnnxConverter;
+using Microsoft.ML.Model.Pfa;
 using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Runtime.Model;
-using Microsoft.ML.Runtime.Model.Onnx;
-using Microsoft.ML.Runtime.Model.Pfa;
-using Microsoft.ML.Runtime.Internal.Internallearn;
 using Newtonsoft.Json.Linq;
 
 [assembly: LoadableClass(typeof(SchemaBindablePredictorWrapper), null, typeof(SignatureLoadModel),
@@ -28,25 +25,25 @@ using Newtonsoft.Json.Linq;
 [assembly: LoadableClass(typeof(SchemaBindableBinaryPredictorWrapper), null, typeof(SignatureLoadModel),
     "Binary Classification Bindable Mapper", SchemaBindableBinaryPredictorWrapper.LoaderSignature)]
 
-namespace Microsoft.ML.Runtime.Data
+namespace Microsoft.ML.Data
 {
     // REVIEW: Consider implementing ICanSaveAs(Code/Text/etc.) for these classes as well.
     /// <summary>
     /// This is a base class for wrapping <see cref="IPredictor"/>s in an <see cref="ISchemaBindableMapper"/>.
     /// </summary>
-    public abstract class SchemaBindablePredictorWrapperBase : ISchemaBindableMapper, ICanSaveModel, ICanSaveSummary,
+    internal abstract class SchemaBindablePredictorWrapperBase : ISchemaBindableMapper, ICanSaveModel, ICanSaveSummary,
         IBindableCanSavePfa, IBindableCanSaveOnnx
     {
         // The ctor guarantees that Predictor is non-null. It also ensures that either
         // ValueMapper or FloatPredictor is non-null (or both). With these guarantees,
         // the score value type (_scoreType) can be determined.
         protected readonly IPredictor Predictor;
-        protected readonly IValueMapper ValueMapper;
-        protected readonly ColumnType ScoreType;
+        private protected readonly IValueMapper ValueMapper;
+        protected readonly DataViewType ScoreType;
 
-        public bool CanSavePfa => (ValueMapper as ICanSavePfa)?.CanSavePfa == true;
+        bool ICanSavePfa.CanSavePfa => (ValueMapper as ICanSavePfa)?.CanSavePfa == true;
 
-        public bool CanSaveOnnx => (ValueMapper as ICanSaveOnnx)?.CanSaveOnnx == true;
+        bool ICanSaveOnnx.CanSaveOnnx(OnnxContext ctx) => (ValueMapper as ICanSaveOnnx)?.CanSaveOnnx(ctx) == true;
 
         public SchemaBindablePredictorWrapperBase(IPredictor predictor)
         {
@@ -56,7 +53,7 @@ namespace Microsoft.ML.Runtime.Data
             ScoreType = GetScoreType(Predictor, out ValueMapper);
         }
 
-        private static ColumnType GetScoreType(IPredictor predictor, out IValueMapper valueMapper)
+        private static DataViewType GetScoreType(IPredictor predictor, out IValueMapper valueMapper)
         {
             Contracts.AssertValue(predictor);
 
@@ -78,7 +75,9 @@ namespace Microsoft.ML.Runtime.Data
             ScoreType = GetScoreType(Predictor, out ValueMapper);
         }
 
-        public virtual void Save(ModelSaveContext ctx)
+        void ICanSaveModel.Save(ModelSaveContext ctx) => SaveModel(ctx);
+
+        private protected virtual void SaveModel(ModelSaveContext ctx)
         {
             Contracts.CheckValue(ctx, nameof(ctx));
             ctx.CheckAtModel();
@@ -89,77 +88,97 @@ namespace Microsoft.ML.Runtime.Data
             ctx.SaveModel(Predictor, ModelFileUtils.DirPredictor);
         }
 
-        public virtual void SaveAsPfa(BoundPfaContext ctx, RoleMappedSchema schema, string[] outputNames)
+        void IBindableCanSavePfa.SaveAsPfa(BoundPfaContext ctx, RoleMappedSchema schema, string[] outputNames)
         {
             Contracts.CheckValue(ctx, nameof(ctx));
             Contracts.CheckValue(schema, nameof(schema));
             Contracts.Assert(ValueMapper is ISingleCanSavePfa);
-            var mapper = (ISingleCanSavePfa)ValueMapper;
+            SaveAsPfaCore(ctx, schema, outputNames);
+        }
 
+        [BestFriend]
+        private protected virtual void SaveAsPfaCore(BoundPfaContext ctx, RoleMappedSchema schema, string[] outputNames)
+        {
             ctx.Hide(outputNames);
         }
 
-        public virtual bool SaveAsOnnx(OnnxContext ctx, RoleMappedSchema schema, string[] outputNames) => false;
+        bool IBindableCanSaveOnnx.SaveAsOnnx(OnnxContext ctx, RoleMappedSchema schema, string[] outputNames)
+        {
+            Contracts.CheckValue(ctx, nameof(ctx));
+            Contracts.CheckValue(schema, nameof(schema));
+            Contracts.Assert(ValueMapper is ISingleCanSaveOnnx);
+            var mapper = (ISingleCanSaveOnnx)ValueMapper;
+            return SaveAsOnnxCore(ctx, schema, outputNames);
+        }
 
-        public ISchemaBoundMapper Bind(IHostEnvironment env, RoleMappedSchema schema)
+        [BestFriend]
+        private protected virtual bool SaveAsOnnxCore(OnnxContext ctx, RoleMappedSchema schema, string[] outputNames) => false;
+
+        ISchemaBoundMapper ISchemaBindableMapper.Bind(IHostEnvironment env, RoleMappedSchema schema)
         {
             Contracts.CheckValue(env, nameof(env));
 
             using (var ch = env.Register("SchemaBindableWrapper").Start("Bind"))
             {
                 ch.CheckValue(schema, nameof(schema));
-                if (schema.Feature != null)
+                if (schema.Feature?.Type is DataViewType type)
                 {
                     // Ensure that the feature column type is compatible with the needed input type.
-                    var type = schema.Feature.Type;
-                    var typeIn = ValueMapper != null ? ValueMapper.InputType : new VectorType(NumberType.Float);
+                    var typeIn = ValueMapper != null ? ValueMapper.InputType : new VectorDataViewType(NumberDataViewType.Single);
                     if (type != typeIn)
                     {
-                        if (!type.ItemType.Equals(typeIn.ItemType))
-                            throw ch.Except("Incompatible features column type item type: '{0}' vs '{1}'", type.ItemType, typeIn.ItemType);
-                        if (type.IsVector != typeIn.IsVector)
+                        VectorDataViewType typeVectorType = type as VectorDataViewType;
+                        VectorDataViewType typeInVectorType = typeIn as VectorDataViewType;
+
+                        DataViewType typeItemType = typeVectorType?.ItemType ?? type;
+                        DataViewType typeInItemType = typeInVectorType?.ItemType ?? typeIn;
+
+                        if (!typeItemType.Equals(typeInItemType))
+                            throw ch.Except("Incompatible features column type item type: '{0}' vs '{1}'", typeItemType, typeInItemType);
+                        if ((typeVectorType != null) != (typeInVectorType != null))
                             throw ch.Except("Incompatible features column type: '{0}' vs '{1}'", type, typeIn);
                         // typeIn can legally have unknown size.
-                        if (type.VectorSize != typeIn.VectorSize && typeIn.VectorSize > 0)
+                        int typeVectorSize = typeVectorType?.Size ?? 0;
+                        int typeInVectorSize = typeInVectorType?.Size ?? 0;
+                        if (typeVectorSize != typeInVectorSize && typeInVectorSize > 0)
                             throw ch.Except("Incompatible features column type: '{0}' vs '{1}'", type, typeIn);
                     }
                 }
-                var mapper = BindCore(ch, schema);
-                ch.Done();
-                return mapper;
+                return BindCore(ch, schema);
             }
         }
 
-        protected abstract ISchemaBoundMapper BindCore(IChannel ch, RoleMappedSchema schema);
+        [BestFriend]
+        private protected abstract ISchemaBoundMapper BindCore(IChannel ch, RoleMappedSchema schema);
 
-        protected virtual Delegate GetPredictionGetter(IRow input, int colSrc)
+        protected virtual Delegate GetPredictionGetter(DataViewRow input, int colSrc)
         {
             Contracts.AssertValue(input);
-            Contracts.Assert(0 <= colSrc && colSrc < input.Schema.ColumnCount);
+            Contracts.Assert(0 <= colSrc && colSrc < input.Schema.Count);
 
-            var typeSrc = input.Schema.GetColumnType(colSrc);
-            Func<IRow, int, ValueGetter<int>> del = GetValueGetter<int, int>;
+            var typeSrc = input.Schema[colSrc].Type;
+            Func<DataViewRow, int, ValueGetter<int>> del = GetValueGetter<int, int>;
             var meth = del.GetMethodInfo().GetGenericMethodDefinition().MakeGenericMethod(typeSrc.RawType, ScoreType.RawType);
             return (Delegate)meth.Invoke(this, new object[] { input, colSrc });
         }
 
-        private ValueGetter<TDst> GetValueGetter<TSrc, TDst>(IRow input, int colSrc)
+        private ValueGetter<TDst> GetValueGetter<TSrc, TDst>(DataViewRow input, int colSrc)
         {
             Contracts.AssertValue(input);
             Contracts.Assert(ValueMapper != null);
 
-            var featureGetter = input.GetGetter<TSrc>(colSrc);
+            var featureGetter = input.GetGetter<TSrc>(input.Schema[colSrc]);
             var map = ValueMapper.GetMapper<TSrc, TDst>();
             var features = default(TSrc);
             return
                 (ref TDst dst) =>
                 {
                     featureGetter(ref features);
-                    map(ref features, ref dst);
+                    map(in features, ref dst);
                 };
         }
 
-        public void SaveSummary(TextWriter writer, RoleMappedSchema schema)
+        void ICanSaveSummary.SaveSummary(TextWriter writer, RoleMappedSchema schema)
         {
             var summarySaver = Predictor as ICanSaveSummary;
             if (summarySaver == null)
@@ -179,48 +198,48 @@ namespace Microsoft.ML.Runtime.Data
             private readonly SchemaBindablePredictorWrapperBase _parent;
 
             public RoleMappedSchema InputRoleMappedSchema { get; }
-            public ISchema Schema { get; }
+            public DataViewSchema OutputSchema { get; }
             public ISchemaBindableMapper Bindable => _parent;
 
-            public SingleValueRowMapper(RoleMappedSchema schema, SchemaBindablePredictorWrapperBase parent, ISchema outputSchema)
+            public SingleValueRowMapper(RoleMappedSchema schema, SchemaBindablePredictorWrapperBase parent, DataViewSchema outputSchema)
             {
                 Contracts.AssertValue(schema);
                 Contracts.AssertValue(parent);
-                Contracts.AssertValue(schema.Feature);
-                Contracts.Assert(outputSchema.ColumnCount == 1);
+                Contracts.Assert(schema.Feature.HasValue);
+                Contracts.Assert(outputSchema.Count == 1);
 
                 _parent = parent;
                 InputRoleMappedSchema = schema;
-                Schema = outputSchema;
+                OutputSchema = outputSchema;
             }
 
-            public Func<int, bool> GetDependencies(Func<int, bool> predicate)
+            /// <summary>
+            /// Given a set of columns, return the input columns that are needed to generate those output columns.
+            /// </summary>
+            IEnumerable<DataViewSchema.Column> ISchemaBoundRowMapper.GetDependenciesForNewColumns(IEnumerable<DataViewSchema.Column> dependingColumns)
             {
-                for (int i = 0; i < Schema.ColumnCount; i++)
-                {
-                    if (predicate(i))
-                        return col => col == InputRoleMappedSchema.Feature.Index;
-                }
-                return col => false;
+                if (!InputRoleMappedSchema.Feature.HasValue || dependingColumns.Count() == 0)
+                    return Enumerable.Empty<DataViewSchema.Column>();
+
+                return Enumerable.Repeat(InputRoleMappedSchema.Feature.Value, 1); ;
             }
 
             public IEnumerable<KeyValuePair<RoleMappedSchema.ColumnRole, string>> GetInputColumnRoles()
             {
-                yield return RoleMappedSchema.ColumnRole.Feature.Bind(InputRoleMappedSchema.Feature.Name);
+                yield return RoleMappedSchema.ColumnRole.Feature.Bind(InputRoleMappedSchema.Feature.Value.Name);
             }
 
-            public ISchema InputSchema => InputRoleMappedSchema.Schema;
+            public DataViewSchema InputSchema => InputRoleMappedSchema.Schema;
 
-            public IRow GetRow(IRow input, Func<int, bool> predicate, out Action disposer)
+            DataViewRow ISchemaBoundRowMapper.GetRow(DataViewRow input, IEnumerable<DataViewSchema.Column> activeColumns)
             {
                 Contracts.AssertValue(input);
-                Contracts.AssertValue(predicate);
+                Contracts.AssertValue(activeColumns);
 
                 var getters = new Delegate[1];
-                if (predicate(0))
-                    getters[0] = _parent.GetPredictionGetter(input, InputRoleMappedSchema.Feature.Index);
-                disposer = null;
-                return new SimpleRow(Schema, input, getters);
+                if (activeColumns.Select(c => c.Index).Contains(0))
+                    getters[0] = _parent.GetPredictionGetter(input, InputRoleMappedSchema.Feature.Value.Index);
+                return new SimpleRow(OutputSchema, input, getters);
             }
         }
     }
@@ -229,7 +248,7 @@ namespace Microsoft.ML.Runtime.Data
     /// This class is a wrapper for all <see cref="IPredictor"/>s except for quantile regression predictors,
     /// and calibrated binary classification predictors.
     /// </summary>
-    public sealed class SchemaBindablePredictorWrapper : SchemaBindablePredictorWrapperBase
+    internal sealed class SchemaBindablePredictorWrapper : SchemaBindablePredictorWrapperBase
     {
         public const string LoaderSignature = "SchemaBindableWrapper";
         private static VersionInfo GetVersionInfo()
@@ -266,50 +285,46 @@ namespace Microsoft.ML.Runtime.Data
             return new SchemaBindablePredictorWrapper(env, ctx);
         }
 
-        public override void Save(ModelSaveContext ctx)
+        private protected override void SaveModel(ModelSaveContext ctx)
         {
             Contracts.CheckValue(ctx, nameof(ctx));
             ctx.SetVersionInfo(GetVersionInfo());
-            base.Save(ctx);
+            base.SaveModel(ctx);
         }
 
-        public override void SaveAsPfa(BoundPfaContext ctx, RoleMappedSchema schema, string[] outputNames)
+        private protected override void SaveAsPfaCore(BoundPfaContext ctx, RoleMappedSchema schema, string[] outputNames)
         {
             Contracts.CheckValue(ctx, nameof(ctx));
             Contracts.CheckValue(schema, nameof(schema));
             Contracts.Assert(ValueMapper is ISingleCanSavePfa);
-            Contracts.AssertValue(schema.Feature);
+            Contracts.Assert(schema.Feature.HasValue);
             Contracts.Assert(Utils.Size(outputNames) == 1); // Score.
             var mapper = (ISingleCanSavePfa)ValueMapper;
             // If the features column was not produced, we must hide the outputs.
-            var featureToken = ctx.TokenOrNullForName(schema.Feature.Name);
+            var featureToken = ctx.TokenOrNullForName(schema.Feature.Value.Name);
             if (featureToken == null)
                 ctx.Hide(outputNames);
             var scoreToken = mapper.SaveAsPfa(ctx, featureToken);
             ctx.DeclareVar(outputNames[0], scoreToken);
         }
 
-        public override bool SaveAsOnnx(OnnxContext ctx, RoleMappedSchema schema, string[] outputNames)
+        private protected override bool SaveAsOnnxCore(OnnxContext ctx, RoleMappedSchema schema, string[] outputNames)
         {
             Contracts.CheckValue(ctx, nameof(ctx));
             Contracts.CheckValue(schema, nameof(schema));
             Contracts.Assert(ValueMapper is ISingleCanSaveOnnx);
-            Contracts.AssertValue(schema.Feature);
+            Contracts.Assert(schema.Feature.HasValue);
             Contracts.Assert(Utils.Size(outputNames) <= 2); // PredictedLabel and/or Score.
             var mapper = (ISingleCanSaveOnnx)ValueMapper;
-            if (!ctx.ContainsColumn(schema.Feature.Name))
+            string featName = schema.Feature.Value.Name;
+            if (!ctx.ContainsColumn(featName))
                 return false;
-
-            Contracts.Assert(ctx.ContainsColumn(schema.Feature.Name));
-
-            return mapper.SaveAsOnnx(ctx, outputNames, ctx.GetVariableName(schema.Feature.Name));
+            Contracts.Assert(ctx.ContainsColumn(featName));
+            return mapper.SaveAsOnnx(ctx, outputNames, ctx.GetVariableName(featName));
         }
 
-        protected override ISchemaBoundMapper BindCore(IChannel ch, RoleMappedSchema schema)
-        {
-            var outputSchema = new ScoreMapperSchema(ScoreType, _scoreColumnKind);
-            return new SingleValueRowMapper(schema, this, outputSchema);
-        }
+        private protected override ISchemaBoundMapper BindCore(IChannel ch, RoleMappedSchema schema) =>
+            new SingleValueRowMapper(schema, this, ScoreSchemaFactory.Create(ScoreType, _scoreColumnKind));
 
         private static string GetScoreColumnKind(IPredictor predictor)
         {
@@ -318,19 +333,19 @@ namespace Microsoft.ML.Runtime.Data
             switch (predictor.PredictionKind)
             {
                 case PredictionKind.BinaryClassification:
-                    return MetadataUtils.Const.ScoreColumnKind.BinaryClassification;
-                case PredictionKind.MultiClassClassification:
-                    return MetadataUtils.Const.ScoreColumnKind.MultiClassClassification;
+                    return AnnotationUtils.Const.ScoreColumnKind.BinaryClassification;
+                case PredictionKind.MulticlassClassification:
+                    return AnnotationUtils.Const.ScoreColumnKind.MulticlassClassification;
                 case PredictionKind.Regression:
-                    return MetadataUtils.Const.ScoreColumnKind.Regression;
+                    return AnnotationUtils.Const.ScoreColumnKind.Regression;
                 case PredictionKind.MultiOutputRegression:
-                    return MetadataUtils.Const.ScoreColumnKind.MultiOutputRegression;
+                    return AnnotationUtils.Const.ScoreColumnKind.MultiOutputRegression;
                 case PredictionKind.Ranking:
-                    return MetadataUtils.Const.ScoreColumnKind.Ranking;
+                    return AnnotationUtils.Const.ScoreColumnKind.Ranking;
                 case PredictionKind.AnomalyDetection:
-                    return MetadataUtils.Const.ScoreColumnKind.AnomalyDetection;
+                    return AnnotationUtils.Const.ScoreColumnKind.AnomalyDetection;
                 case PredictionKind.Clustering:
-                    return MetadataUtils.Const.ScoreColumnKind.Clustering;
+                    return AnnotationUtils.Const.ScoreColumnKind.Clustering;
                 default:
                     throw Contracts.Except("Unknown prediction kind, can't map to score column kind: {0}", predictor.PredictionKind);
             }
@@ -341,7 +356,7 @@ namespace Microsoft.ML.Runtime.Data
     /// This is an <see cref="ISchemaBindableMapper"/> wrapper for calibrated binary classification predictors.
     /// They need a separate wrapper because they return two values instead of one: the raw score and the probability.
     /// </summary>
-    public sealed class SchemaBindableBinaryPredictorWrapper : SchemaBindablePredictorWrapperBase
+    internal sealed class SchemaBindableBinaryPredictorWrapper : SchemaBindablePredictorWrapperBase
     {
         public const string LoaderSignature = "BinarySchemaBindable";
         private static VersionInfo GetVersionInfo()
@@ -377,23 +392,23 @@ namespace Microsoft.ML.Runtime.Data
             return new SchemaBindableBinaryPredictorWrapper(env, ctx);
         }
 
-        public override void Save(ModelSaveContext ctx)
+        private protected override void SaveModel(ModelSaveContext ctx)
         {
             Contracts.CheckValue(ctx, nameof(ctx));
             ctx.SetVersionInfo(GetVersionInfo());
-            base.Save(ctx);
+            base.SaveModel(ctx);
         }
 
-        public override void SaveAsPfa(BoundPfaContext ctx, RoleMappedSchema schema, string[] outputNames)
+        private protected override void SaveAsPfaCore(BoundPfaContext ctx, RoleMappedSchema schema, string[] outputNames)
         {
             Contracts.CheckValue(ctx, nameof(ctx));
             Contracts.CheckValue(schema, nameof(schema));
             Contracts.Assert(ValueMapper is IDistCanSavePfa);
-            Contracts.AssertValue(schema.Feature);
+            Contracts.Assert(schema.Feature.HasValue);
             Contracts.Assert(Utils.Size(outputNames) == 2); // Score and prob.
             var mapper = (IDistCanSavePfa)ValueMapper;
             // If the features column was not produced, we must hide the outputs.
-            string featureToken = ctx.TokenOrNullForName(schema.Feature.Name);
+            string featureToken = ctx.TokenOrNullForName(schema.Feature.Value.Name);
             if (featureToken == null)
                 ctx.Hide(outputNames);
 
@@ -404,27 +419,26 @@ namespace Microsoft.ML.Runtime.Data
             Contracts.Assert(ctx.TokenOrNullForName(outputNames[1]) == probToken.ToString());
         }
 
-        public override bool SaveAsOnnx(OnnxContext ctx, RoleMappedSchema schema, string[] outputNames)
+        private protected override bool SaveAsOnnxCore(OnnxContext ctx, RoleMappedSchema schema, string[] outputNames)
         {
             Contracts.CheckValue(ctx, nameof(ctx));
             Contracts.CheckValue(schema, nameof(schema));
 
             var mapper = ValueMapper as ISingleCanSaveOnnx;
             Contracts.CheckValue(mapper, nameof(mapper));
-            Contracts.AssertValue(schema.Feature);
+            Contracts.Assert(schema.Feature.HasValue);
             Contracts.Assert(Utils.Size(outputNames) == 3); // Predicted Label, Score and Probablity.
 
-            if (!ctx.ContainsColumn(schema.Feature.Name))
+            var featName = schema.Feature.Value.Name;
+            if (!ctx.ContainsColumn(featName))
                 return false;
-
-            Contracts.Assert(ctx.ContainsColumn(schema.Feature.Name));
-
-            return mapper.SaveAsOnnx(ctx, outputNames, ctx.GetVariableName(schema.Feature.Name));
+            Contracts.Assert(ctx.ContainsColumn(featName));
+            return mapper.SaveAsOnnx(ctx, outputNames, ctx.GetVariableName(featName));
         }
 
         private void CheckValid(out IValueMapperDist distMapper)
         {
-            Contracts.Check(ScoreType == NumberType.Float, "Expected predictor result type to be Float");
+            Contracts.Check(ScoreType == NumberDataViewType.Single, "Expected predictor result type to be float");
 
             distMapper = Predictor as IValueMapperDist;
             if (distMapper == null)
@@ -433,13 +447,13 @@ namespace Microsoft.ML.Runtime.Data
             // REVIEW: In theory the restriction on input type could be relaxed at the expense
             // of more complicated code in CalibratedRowMapper.GetGetters. Not worth it at this point
             // and no good way to test it.
-            Contracts.Check(distMapper.InputType.IsVector && distMapper.InputType.ItemType == NumberType.Float,
+            Contracts.Check(distMapper.InputType is VectorDataViewType vectorType && vectorType.ItemType == NumberDataViewType.Single,
                 "Invalid input type for the IValueMapperDist");
-            Contracts.Check(distMapper.DistType == NumberType.Float,
+            Contracts.Check(distMapper.DistType == NumberDataViewType.Single,
                 "Invalid probability type for the IValueMapperDist");
         }
 
-        protected override ISchemaBoundMapper BindCore(IChannel ch, RoleMappedSchema schema)
+        private protected override ISchemaBoundMapper BindCore(IChannel ch, RoleMappedSchema schema)
         {
             if (Predictor.PredictionKind != PredictionKind.BinaryClassification)
                 ch.Warning("Scoring predictor of kind '{0}' as '{1}'.", Predictor.PredictionKind, PredictionKind.BinaryClassification);
@@ -451,17 +465,17 @@ namespace Microsoft.ML.Runtime.Data
 
         /// <summary>
         /// The <see cref="ISchemaBoundRowMapper"/> implementation for distribution predictor wrappers that produce
-        /// two Float-valued output columns. Note that the Bindable wrapper does input schema validation.
+        /// two float-valued output columns. Note that the Bindable wrapper does input schema validation.
         /// </summary>
         private sealed class CalibratedRowMapper : ISchemaBoundRowMapper
         {
             private readonly SchemaBindableBinaryPredictorWrapper _parent;
-            private readonly ScoreMapperSchemaBase _outputSchema;
 
             public RoleMappedSchema InputRoleMappedSchema { get; }
-            public ISchema InputSchema => InputRoleMappedSchema.Schema;
+            public DataViewSchema InputSchema => InputRoleMappedSchema.Schema;
 
-            public ISchema Schema => _outputSchema;
+            public DataViewSchema OutputSchema { get; }
+
             public ISchemaBindableMapper Bindable => _parent;
 
             public CalibratedRowMapper(RoleMappedSchema schema, SchemaBindableBinaryPredictorWrapper parent)
@@ -469,28 +483,30 @@ namespace Microsoft.ML.Runtime.Data
                 Contracts.AssertValue(parent);
                 Contracts.Assert(parent._distMapper != null);
                 Contracts.AssertValue(schema);
-                Contracts.AssertValueOrNull(schema.Feature);
 
                 _parent = parent;
                 InputRoleMappedSchema = schema;
-                _outputSchema = new BinaryClassifierSchema();
+                OutputSchema = ScoreSchemaFactory.CreateBinaryClassificationSchema();
 
-                if (schema.Feature != null)
+                if (schema.Feature?.Type is DataViewType typeSrc)
                 {
-                    var typeSrc = InputRoleMappedSchema.Feature.Type;
-                    Contracts.Check(typeSrc.IsKnownSizeVector && typeSrc.ItemType == NumberType.Float,
+                    Contracts.Check(typeSrc is VectorDataViewType vectorType
+                        && vectorType.IsKnownSize
+                        && vectorType.ItemType == NumberDataViewType.Single,
                         "Invalid feature column type");
                 }
             }
 
-            public Func<int, bool> GetDependencies(Func<int, bool> predicate)
+            /// <summary>
+            /// Given a set of columns, return the input columns that are needed to generate those output columns.
+            /// </summary>
+            IEnumerable<DataViewSchema.Column> ISchemaBoundRowMapper.GetDependenciesForNewColumns(IEnumerable<DataViewSchema.Column> dependingColumns)
             {
-                for (int i = 0; i < Schema.ColumnCount; i++)
-                {
-                    if (predicate(i) && InputRoleMappedSchema.Feature != null)
-                        return col => col == InputRoleMappedSchema.Feature.Index;
-                }
-                return col => false;
+
+                if (dependingColumns.Count() == 0 || !InputRoleMappedSchema.Feature.HasValue)
+                    return Enumerable.Empty<DataViewSchema.Column>();
+
+                return Enumerable.Repeat(InputRoleMappedSchema.Feature.Value, 1);
             }
 
             public IEnumerable<KeyValuePair<RoleMappedSchema.ColumnRole, string>> GetInputColumnRoles()
@@ -498,7 +514,7 @@ namespace Microsoft.ML.Runtime.Data
                 yield return RoleMappedSchema.ColumnRole.Feature.Bind(InputRoleMappedSchema.Feature?.Name);
             }
 
-            private Delegate[] CreateGetters(IRow input, bool[] active)
+            private Delegate[] CreateGetters(DataViewRow input, bool[] active)
             {
                 Contracts.Assert(Utils.Size(active) == 2);
                 Contracts.Assert(_parent._distMapper != null);
@@ -507,18 +523,18 @@ namespace Microsoft.ML.Runtime.Data
                 if (active[0] || active[1])
                 {
                     // Put all captured locals at this scope.
-                    var featureGetter = InputRoleMappedSchema.Feature!= null ? input.GetGetter<VBuffer<Float>>(InputRoleMappedSchema.Feature.Index) : null;
-                    Float prob = 0;
-                    Float score = 0;
+                    var featureGetter = InputRoleMappedSchema.Feature.HasValue ? input.GetGetter<VBuffer<float>>(InputRoleMappedSchema.Feature.Value) : null;
+                    float prob = 0;
+                    float score = 0;
                     long cachedPosition = -1;
-                    var features = default(VBuffer<Float>);
-                    ValueMapper<VBuffer<Float>, Float, Float> mapper;
+                    var features = default(VBuffer<float>);
+                    ValueMapper<VBuffer<float>, float, float> mapper;
 
-                    mapper = _parent._distMapper.GetMapper<VBuffer<Float>, Float, Float>();
+                    mapper = _parent._distMapper.GetMapper<VBuffer<float>, float, float>();
                     if (active[0])
                     {
-                        ValueGetter<Float> getScore =
-                            (ref Float dst) =>
+                        ValueGetter<float> getScore =
+                            (ref float dst) =>
                             {
                                 EnsureCachedResultValueMapper(mapper, ref cachedPosition, featureGetter, ref features, ref score, ref prob, input);
                                 dst = score;
@@ -527,8 +543,8 @@ namespace Microsoft.ML.Runtime.Data
                     }
                     if (active[1])
                     {
-                        ValueGetter<Float> getProb =
-                            (ref Float dst) =>
+                        ValueGetter<float> getProb =
+                            (ref float dst) =>
                             {
                                 EnsureCachedResultValueMapper(mapper, ref cachedPosition, featureGetter, ref features, ref score, ref prob, input);
                                 dst = prob;
@@ -539,9 +555,9 @@ namespace Microsoft.ML.Runtime.Data
                 return getters;
             }
 
-            private static void EnsureCachedResultValueMapper(ValueMapper<VBuffer<Float>, Float, Float> mapper,
-                ref long cachedPosition, ValueGetter<VBuffer<Float>> featureGetter, ref VBuffer<Float> features,
-                ref Float score, ref Float prob, IRow input)
+            private static void EnsureCachedResultValueMapper(ValueMapper<VBuffer<float>, float, float> mapper,
+                ref long cachedPosition, ValueGetter<VBuffer<float>> featureGetter, ref VBuffer<float> features,
+                ref float score, ref float prob, DataViewRow input)
             {
                 Contracts.AssertValue(mapper);
                 if (cachedPosition != input.Position)
@@ -549,27 +565,27 @@ namespace Microsoft.ML.Runtime.Data
                     if (featureGetter != null)
                         featureGetter(ref features);
 
-                    mapper(ref features, ref score, ref prob);
+                    mapper(in features, ref score, ref prob);
                     cachedPosition = input.Position;
                 }
             }
 
-            public IRow GetRow(IRow input, Func<int, bool> predicate, out Action disposer)
+            DataViewRow ISchemaBoundRowMapper.GetRow(DataViewRow input, IEnumerable<DataViewSchema.Column> activeColumns)
             {
                 Contracts.AssertValue(input);
-                var active = Utils.BuildArray(Schema.ColumnCount, predicate);
+                var active = Utils.BuildArray(OutputSchema.Count, activeColumns);
                 var getters = CreateGetters(input, active);
-                disposer = null;
-                return new SimpleRow(Schema, input, getters);
+                return new SimpleRow(OutputSchema, input, getters);
             }
         }
     }
 
     /// <summary>
     /// This is an <see cref="ISchemaBindableMapper"/> wrapper for quantile regression predictors. They need a separate
-    /// wrapper because they need the quantiles to create the ISchemaBound.
+    /// wrapper because they need the quantiles to create the <see cref="ISchemaBoundMapper"/>.
     /// </summary>
-    public sealed class SchemaBindableQuantileRegressionPredictor : SchemaBindablePredictorWrapperBase
+    [BestFriend]
+    internal sealed class SchemaBindableQuantileRegressionPredictor : SchemaBindablePredictorWrapperBase
     {
         public const string LoaderSignature = "QuantileSchemaBindable";
         private static VersionInfo GetVersionInfo()
@@ -585,17 +601,17 @@ namespace Microsoft.ML.Runtime.Data
         }
 
         private readonly IQuantileValueMapper _qpred;
-        private readonly Double[] _quantiles;
+        private readonly double[] _quantiles;
 
-        public SchemaBindableQuantileRegressionPredictor(IPredictor predictor, Double[] quantiles)
+        public SchemaBindableQuantileRegressionPredictor(IPredictor predictor, double[] quantiles)
             : base(predictor)
         {
             var qpred = Predictor as IQuantileValueMapper;
             Contracts.CheckParam(qpred != null, nameof(predictor), "Predictor doesn't implement " + nameof(IQuantileValueMapper));
             _qpred = qpred;
-            Contracts.CheckParam(ScoreType == NumberType.Float, nameof(predictor), "Unexpected predictor output type");
-            Contracts.CheckParam(ValueMapper != null && ValueMapper.InputType.IsVector
-                && ValueMapper.InputType.ItemType == NumberType.Float,
+            Contracts.CheckParam(ScoreType == NumberDataViewType.Single, nameof(predictor), "Unexpected predictor output type");
+            Contracts.CheckParam(ValueMapper != null && ValueMapper.InputType is VectorDataViewType vectorType
+                && vectorType.ItemType == NumberDataViewType.Single,
                 nameof(predictor), "Unexpected predictor input type");
             Contracts.CheckNonEmpty(quantiles, nameof(quantiles), "Quantiles must not be empty");
             _quantiles = quantiles;
@@ -607,19 +623,19 @@ namespace Microsoft.ML.Runtime.Data
             // *** Binary format ***
             // <base info>
             // int: the number of quantiles
-            // Double[]: the quantiles
+            // double[]: the quantiles
 
             var qpred = Predictor as IQuantileValueMapper;
             Contracts.CheckDecode(qpred != null);
             _qpred = qpred;
-            Contracts.CheckDecode(ScoreType == NumberType.Float);
-            Contracts.CheckDecode(ValueMapper != null && ValueMapper.InputType.IsVector
-                && ValueMapper.InputType.ItemType == NumberType.Float);
+            Contracts.CheckDecode(ScoreType == NumberDataViewType.Single);
+            Contracts.CheckDecode(ValueMapper != null && ValueMapper.InputType is VectorDataViewType vectorType
+                && vectorType.ItemType == NumberDataViewType.Single);
             _quantiles = ctx.Reader.ReadDoubleArray();
             Contracts.CheckDecode(Utils.Size(_quantiles) > 0);
         }
 
-        public override void Save(ModelSaveContext ctx)
+        private protected override void SaveModel(ModelSaveContext ctx)
         {
             Contracts.CheckValue(ctx, nameof(ctx));
             ctx.SetVersionInfo(GetVersionInfo());
@@ -627,9 +643,9 @@ namespace Microsoft.ML.Runtime.Data
             // *** Binary format ***
             // <base info>
             // int: the number of quantiles
-            // Double[]: the quantiles
+            // double[]: the quantiles
 
-            base.Save(ctx);
+            base.SaveModel(ctx);
             ctx.Writer.WriteDoubleArray(_quantiles);
         }
 
@@ -640,116 +656,38 @@ namespace Microsoft.ML.Runtime.Data
             return new SchemaBindableQuantileRegressionPredictor(env, ctx);
         }
 
-        protected override ISchemaBoundMapper BindCore(IChannel ch, RoleMappedSchema schema)
-        {
-            return new SingleValueRowMapper(schema, this, new Schema(ScoreType, _quantiles));
-        }
+        private protected override ISchemaBoundMapper BindCore(IChannel ch, RoleMappedSchema schema) =>
+            new SingleValueRowMapper(schema, this, ScoreSchemaFactory.CreateQuantileRegressionSchema(ScoreType, _quantiles));
 
-        protected override Delegate GetPredictionGetter(IRow input, int colSrc)
+        protected override Delegate GetPredictionGetter(DataViewRow input, int colSrc)
         {
             Contracts.AssertValue(input);
-            Contracts.Assert(0 <= colSrc && colSrc < input.Schema.ColumnCount);
+            Contracts.Assert(0 <= colSrc && colSrc < input.Schema.Count);
 
-            var typeSrc = input.Schema.GetColumnType(colSrc);
-            Contracts.Assert(typeSrc.IsVector && typeSrc.ItemType == NumberType.Float);
+            var column = input.Schema[colSrc];
+            var typeSrc = column.Type as VectorDataViewType;
+            Contracts.Assert(typeSrc != null && typeSrc.ItemType == NumberDataViewType.Single);
             Contracts.Assert(ValueMapper == null ||
-                typeSrc.VectorSize == ValueMapper.InputType.VectorSize || ValueMapper.InputType.VectorSize == 0);
+                typeSrc.Size == ValueMapper.InputType.GetVectorSize() || ValueMapper.InputType.GetVectorSize() == 0);
             Contracts.Assert(Utils.Size(_quantiles) > 0);
 
-            var featureGetter = input.GetGetter<VBuffer<Float>>(colSrc);
-            var featureCount = ValueMapper != null ? ValueMapper.InputType.VectorSize : 0;
+            var featureGetter = input.GetGetter<VBuffer<float>>(column);
+            var featureCount = ValueMapper != null ? ValueMapper.InputType.GetVectorSize() : 0;
 
-            var quantiles = new Float[_quantiles.Length];
+            var quantiles = new float[_quantiles.Length];
             for (int i = 0; i < quantiles.Length; i++)
-                quantiles[i] = (Float)_quantiles[i];
+                quantiles[i] = (float)_quantiles[i];
             var map = _qpred.GetMapper(quantiles);
 
-            var features = default(VBuffer<Float>);
-            ValueGetter<VBuffer<Float>> del =
-                (ref VBuffer<Float> value) =>
+            var features = default(VBuffer<float>);
+            ValueGetter<VBuffer<float>> del =
+                (ref VBuffer<float> value) =>
                 {
                     featureGetter(ref features);
                     Contracts.Check(features.Length == featureCount || featureCount == 0);
-                    map(ref features, ref value);
+                    map(in features, ref value);
                 };
             return del;
-        }
-
-        private sealed class Schema : ScoreMapperSchemaBase
-        {
-            private readonly string[] _slotNames;
-            private readonly MetadataUtils.MetadataGetter<VBuffer<ReadOnlyMemory<char>>> _getSlotNames;
-
-            public Schema(ColumnType scoreType, Double[] quantiles)
-                : base(scoreType, MetadataUtils.Const.ScoreColumnKind.QuantileRegression)
-            {
-                Contracts.Assert(Utils.Size(quantiles) > 0);
-                _slotNames = new string[quantiles.Length];
-                for (int i = 0; i < _slotNames.Length; i++)
-                    _slotNames[i] = string.Format("Quantile-{0}", quantiles[i]);
-                _getSlotNames = GetSlotNames;
-            }
-
-            public override int ColumnCount { get { return 1; } }
-
-            public override IEnumerable<KeyValuePair<string, ColumnType>> GetMetadataTypes(int col)
-            {
-                Contracts.CheckParam(0 <= col && col < ColumnCount, nameof(col));
-                Contracts.Assert(Utils.Size(_slotNames) > 0);
-                Contracts.Assert(col == 0);
-
-                var items = base.GetMetadataTypes(col);
-                items = items.Prepend(MetadataUtils.GetSlotNamesPair(_slotNames.Length));
-                return items;
-            }
-
-            public override ColumnType GetMetadataTypeOrNull(string kind, int col)
-            {
-                Contracts.CheckParam(0 <= col && col < ColumnCount, nameof(col));
-                Contracts.CheckNonEmpty(kind, nameof(kind));
-                Contracts.Assert(Utils.Size(_slotNames) > 0);
-                Contracts.Assert(col == 0);
-
-                if (kind == MetadataUtils.Kinds.SlotNames)
-                    return MetadataUtils.GetNamesType(_slotNames.Length);
-                return base.GetMetadataTypeOrNull(kind, col);
-            }
-
-            public override void GetMetadata<TValue>(string kind, int col, ref TValue value)
-            {
-                Contracts.CheckParam(0 <= col && col < ColumnCount, nameof(col));
-                Contracts.CheckNonEmpty(kind, nameof(kind));
-                Contracts.Assert(Utils.Size(_slotNames) > 0);
-                Contracts.Assert(col == 0);
-                Contracts.Assert(_getSlotNames != null);
-
-                if (kind == MetadataUtils.Kinds.SlotNames)
-                    _getSlotNames.Marshal(col, ref value);
-                else
-                    base.GetMetadata(kind, col, ref value);
-            }
-
-            public override ColumnType GetColumnType(int col)
-            {
-                Contracts.CheckParam(0 <= col && col < ColumnCount, nameof(col));
-                Contracts.Assert(col == 0);
-                Contracts.Assert(Utils.Size(_slotNames) > 0);
-                return new VectorType(NumberType.Float, _slotNames.Length);
-            }
-
-            private void GetSlotNames(int iinfo, ref VBuffer<ReadOnlyMemory<char>> dst)
-            {
-                Contracts.Assert(iinfo == 0);
-                Contracts.Assert(Utils.Size(_slotNames) > 0);
-
-                int size = Utils.Size(_slotNames);
-                var values = dst.Values;
-                if (Utils.Size(values) < size)
-                    values = new ReadOnlyMemory<char>[size];
-                for (int i = 0; i < _slotNames.Length; i++)
-                    values[i] = _slotNames[i].AsMemory();
-                dst = new VBuffer<ReadOnlyMemory<char>>(size, values, dst.Indices);
-            }
         }
     }
 }

@@ -2,9 +2,9 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Microsoft.ML.Core.Data;
+using Microsoft.ML.Runtime;
 
-namespace Microsoft.ML.Runtime.Data
+namespace Microsoft.ML.Data
 {
     /// <summary>
     /// The trivial implementation of <see cref="IEstimator{TTransformer}"/> that already has
@@ -16,10 +16,13 @@ namespace Microsoft.ML.Runtime.Data
     public abstract class TrivialEstimator<TTransformer> : IEstimator<TTransformer>
         where TTransformer : class, ITransformer
     {
-        protected readonly IHost Host;
-        protected readonly TTransformer Transformer;
+        [BestFriend]
+        private protected readonly IHost Host;
+        [BestFriend]
+        private protected readonly TTransformer Transformer;
 
-        protected TrivialEstimator(IHost host, TTransformer transformer)
+        [BestFriend]
+        private protected TrivialEstimator(IHost host, TTransformer transformer)
         {
             Contracts.AssertValue(host);
 

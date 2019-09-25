@@ -3,10 +3,13 @@
 // See the LICENSE file in the project root for more information.
 
 using System.Collections.Generic;
-using Microsoft.ML.Runtime.Data;
+using Microsoft.ML.Data;
 
-namespace Microsoft.ML.Runtime.Model.Onnx
+namespace Microsoft.ML.Model.OnnxConverter
 {
+    [BestFriend]
+    internal enum OnnxVersion { Stable = 0, Experimental = 1 }
+
     /// <summary>
     /// A context for defining a ONNX output. The context internally contains the model-in-progress being built. This
     /// same context object is iteratively given to exportable components via the <see cref="ICanSaveOnnx"/> interface
@@ -14,7 +17,8 @@ namespace Microsoft.ML.Runtime.Model.Onnx
     /// given to a component, all other components up to that component have already attempted to express themselves in
     /// this context, with their outputs possibly available in the ONNX graph.
     /// </summary>
-    public abstract class OnnxContext
+    [BestFriend]
+    internal abstract class OnnxContext
     {
         /// <summary>
         /// Generates a unique name for the node based on a prefix.
@@ -22,6 +26,13 @@ namespace Microsoft.ML.Runtime.Model.Onnx
         /// <param name="prefix">The prefix for the node</param>
         /// <returns>A name that has not yet been returned from this function, starting with <paramref name="prefix"/></returns>
         public abstract string GetNodeName(string prefix);
+
+        /// <summary>
+        /// Determine if a string has been used as ONNX variable name somewhere.
+        /// </summary>
+        /// <param name="variableName">examined string</param>
+        /// <returns>True if the input argument has been used to denote an ONNX variable. Otherwise, False.</returns>
+        public abstract bool IsVariableDefined(string variableName);
 
         /// <summary>
         /// Looks up whether a given data view column has a mapping in the ONNX context. Once confirmed, callers can
@@ -36,7 +47,7 @@ namespace Microsoft.ML.Runtime.Model.Onnx
         /// </summary>
         /// <param name="colName">Column name to stop tracking</param>
         /// <param name="removeVariable">Remove associated ONNX variable. This is useful in the event where an output
-        /// variable is created through <see cref="AddIntermediateVariable(ColumnType, string, bool)"/>before realizing
+        /// variable is created through <see cref="AddIntermediateVariable(DataViewType, string, bool)"/>before realizing
         /// the transform cannot actually save as ONNX.</param>
         public abstract void RemoveColumn(string colName, bool removeVariable = false);
 
@@ -70,7 +81,7 @@ namespace Microsoft.ML.Runtime.Model.Onnx
         /// <param name="skip">Whether we should skip the process of establishing the mapping from data view column to
         /// ONNX variable name.</param>
         /// <returns>The returned value is the name of the variable corresponding </returns>
-        public abstract string AddIntermediateVariable(ColumnType type, string colName, bool skip = false);
+        public abstract string AddIntermediateVariable(DataViewType type, string colName, bool skip = false);
 
         /// <summary>
         /// Creates an ONNX node
@@ -78,7 +89,7 @@ namespace Microsoft.ML.Runtime.Model.Onnx
         /// <param name="opType">The name of the ONNX operator to apply</param>
         /// <param name="inputs">The names of the variables as inputs</param>
         /// <param name="outputs">The names of the variables to create as outputs,
-        /// which ought to have been something returned from <see cref="AddIntermediateVariable(ColumnType, string, bool)"/></param>
+        /// which ought to have been something returned from <see cref="AddIntermediateVariable(DataViewType, string, bool)"/></param>
         /// <param name="name">The name of the operator, which ought to be something returned from <see cref="GetNodeName(string)"/></param>
         /// <param name="domain">The domain of the ONNX operator, if non-default</param>
         /// <returns>A node added to the in-progress ONNX graph, that attributes can be set on</returns>
@@ -92,11 +103,75 @@ namespace Microsoft.ML.Runtime.Model.Onnx
         /// <param name="opType">The name of the ONNX operator to apply</param>
         /// <param name="input">The name of the variable as input</param>
         /// <param name="output">The name of the variable as output,
-        /// which ought to have been something returned from <see cref="OnnxContext.AddIntermediateVariable(ColumnType, string, bool)"/></param>
+        /// which ought to have been something returned from <see cref="OnnxContext.AddIntermediateVariable(DataViewType, string, bool)"/></param>
         /// <param name="name">The name of the operator, which ought to be something returned from <see cref="OnnxContext.GetNodeName(string)"/></param>
         /// <param name="domain">The domain of the ONNX operator, if non-default</param>
         /// <returns>A node added to the in-progress ONNX graph, that attributes can be set on</returns>
         public OnnxNode CreateNode(string opType, string input, string output, string name, string domain = null)
             => CreateNode(opType, new[] { input }, new[] { output }, name, domain);
+
+        /// <summary>
+        /// Get the targeted ONNX version string. Only two values are allowed now: "Stable" and "Experimental".
+        /// </summary>
+        /// <returns></returns>
+        public abstract OnnxVersion GetOnnxVersion();
+
+        /// <summary>
+        /// Retrieve the shape of an ONNX variable. Returns null if no shape for the specified variable can be found.
+        /// </summary>
+        /// <param name="variableName">The ONNX name of the returned shape</param>
+        /// <returns>The shape of the retrieved variable</returns>
+        public abstract List<long> RetrieveShapeOrNull(string variableName);
+
+        /// <summary>
+        /// Call this function can declare a global float
+        /// </summary>
+        /// <param name="value">The float number which is going to be added</param>
+        /// <param name="name">A string used as a seed to generate this initializer's name in the ONNX graph.</param>
+        /// <returns>The initializer's ONNX name</returns>
+        public abstract string AddInitializer(float value, string name = null);
+
+        /// <summary>
+        /// Call this function can declare a global long
+        /// </summary>
+        /// <param name="value">The long number which is going to be added into the ONNX graph</param>
+        /// <param name="name">A string used as a seed to generate this initializer's name in the ONNX graph.</param>
+        /// <returns>The initializer's ONNX name</returns>
+        public abstract string AddInitializer(long value, string name = null);
+
+        /// <summary>
+        /// Call this function can declare a global string
+        /// </summary>
+        /// <param name="value">The string which is going to be added into the ONNX graph</param>
+        /// <param name="name">A string used as a seed to generate this initializer's name in the ONNX graph.</param>
+        /// <returns>The initializer's ONNX name</returns>
+        public abstract string AddInitializer(string value, string name = null);
+
+        /// <summary>
+        /// Call this function can declare a global float tensor
+        /// </summary>
+        /// <param name="values">The floats which are going to be added into the ONNX graph</param>
+        /// <param name="dims">The shape that the floats</param>
+        /// <param name="name">A string used as a seed to generate this initializer's name in the ONNX graph.</param>
+        /// <returns>The initializer's ONNX name</returns>
+        public abstract string AddInitializer(IEnumerable<float> values, IEnumerable<long> dims, string name = null);
+
+        /// <summary>
+        /// Call this function can declare a global long tensor
+        /// </summary>
+        /// <param name="values">The longs which are going to be added into the ONNX graph</param>
+        /// <param name="dims">The shape that the floats</param>
+        /// <param name="name">A string used as a seed to generate this initializer's name in the ONNX graph.</param>
+        /// <returns>The initializer's ONNX name</returns>
+        public abstract string AddInitializer(IEnumerable<long> values, IEnumerable<long> dims, string name = null);
+
+        /// <summary>
+        /// Call this function can declare a global string tensor
+        /// </summary>
+        /// <param name="values">The strings which are going to be added into the ONNX graph</param>
+        /// <param name="dims">The shape that the strings</param>
+        /// <param name="name">A string used as a seed to generate this initializer's name in the ONNX graph.</param>
+        /// <returns>The initializer's ONNX name</returns>
+        public abstract string AddInitializer(IEnumerable<string> values, IEnumerable<long> dims, string name = null);
     }
 }

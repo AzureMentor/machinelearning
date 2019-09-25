@@ -6,25 +6,26 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Reflection;
-using System.Text;
+using Microsoft.ML;
+using Microsoft.ML.Calibrators;
+using Microsoft.ML.Command;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Data;
+using Microsoft.ML.Data.IO;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Model;
 using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.Command;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Data.IO;
-using Microsoft.ML.Runtime.Internal.Calibration;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Runtime.Model;
+using Microsoft.ML.Transforms;
 
 [assembly: LoadableClass(TrainCommand.Summary, typeof(TrainCommand), typeof(TrainCommand.Arguments), typeof(SignatureCommand),
     "Train Predictor", "Train")]
 
-namespace Microsoft.ML.Runtime.Data
+namespace Microsoft.ML.Data
 {
     using ColumnRole = RoleMappedSchema.ColumnRole;
 
-    public enum NormalizeOption
+    [BestFriend]
+    internal enum NormalizeOption
     {
         No,
         Warn,
@@ -32,7 +33,8 @@ namespace Microsoft.ML.Runtime.Data
         Yes
     }
 
-    public sealed class TrainCommand : DataCommand.ImplBase<TrainCommand.Arguments>
+    [BestFriend]
+    internal sealed class TrainCommand : DataCommand.ImplBase<TrainCommand.Arguments>
     {
         public sealed class Arguments : DataCommand.ArgumentsBase
         {
@@ -53,8 +55,9 @@ namespace Microsoft.ML.Runtime.Data
             [Argument(ArgumentType.AtMostOnce, HelpText = "Name column name", ShortName = "name", SortOrder = 6)]
             public string NameColumn = DefaultColumnNames.Name;
 
-            [Argument(ArgumentType.LastOccurenceWins, HelpText = "Columns with custom kinds declared through key assignments, e.g., col[Kind]=Name to assign column named 'Name' kind 'Kind'", ShortName = "col", SortOrder = 10)]
-            public KeyValuePair<string, string>[] CustomColumn;
+            [Argument(ArgumentType.LastOccurenceWins, HelpText = "Columns with custom kinds declared through key assignments, for example, col[Kind]=Name to assign column named 'Name' kind 'Kind'",
+                Name = "CustomColumn", ShortName = "col", SortOrder = 10)]
+            public KeyValuePair<string, string>[] CustomColumns;
 
             [Argument(ArgumentType.LastOccurenceWins, HelpText = "Normalize option for the feature column", ShortName = "norm")]
             public NormalizeOption NormalizeFeatures = NormalizeOption.Auto;
@@ -64,6 +67,9 @@ namespace Microsoft.ML.Runtime.Data
 
             [Argument(ArgumentType.AtMostOnce, IsInputFileName = true, HelpText = "The validation data file", ShortName = "valid")]
             public string ValidationFile;
+
+            [Argument(ArgumentType.AtMostOnce, IsInputFileName = true, HelpText = "The test data file", ShortName = "test")]
+            public string TestFile;
 
             [Argument(ArgumentType.LastOccurenceWins, HelpText = "Whether we should cache input training data", ShortName = "cache")]
             public bool? CacheData;
@@ -108,7 +114,7 @@ namespace Microsoft.ML.Runtime.Data
             using (var ch = Host.Start(command))
             using (var server = InitServer(ch))
             {
-                var settings = CmdParser.GetSettings(Host, Args, new Arguments());
+                var settings = CmdParser.GetSettings(Host, ImplOptions, new Arguments());
                 string cmd = string.Format("maml.exe {0} {1}", command, settings);
                 ch.Info(cmd);
 
@@ -118,8 +124,6 @@ namespace Microsoft.ML.Runtime.Data
                 {
                     RunCore(ch, cmd);
                 }
-
-                ch.Done();
             }
         }
 
@@ -138,29 +142,29 @@ namespace Microsoft.ML.Runtime.Data
             ITrainer trainer = _trainer.CreateComponent(Host);
 
             IPredictor inputPredictor = null;
-            if (Args.ContinueTrain && !TrainUtils.TryLoadPredictor(ch, Host, Args.InputModelFile, out inputPredictor))
+            if (ImplOptions.ContinueTrain && !TrainUtils.TryLoadPredictor(ch, Host, ImplOptions.InputModelFile, out inputPredictor))
                 ch.Warning("No input model file specified or model file did not contain a predictor. The model state cannot be initialized.");
 
             ch.Trace("Constructing data pipeline");
             IDataView view = CreateLoader();
 
-            ISchema schema = view.Schema;
+            var schema = view.Schema;
             var label = TrainUtils.MatchNameOrDefaultOrNull(ch, schema, nameof(Arguments.LabelColumn), _labelColumn, DefaultColumnNames.Label);
             var feature = TrainUtils.MatchNameOrDefaultOrNull(ch, schema, nameof(Arguments.FeatureColumn), _featureColumn, DefaultColumnNames.Features);
             var group = TrainUtils.MatchNameOrDefaultOrNull(ch, schema, nameof(Arguments.GroupColumn), _groupColumn, DefaultColumnNames.GroupId);
             var weight = TrainUtils.MatchNameOrDefaultOrNull(ch, schema, nameof(Arguments.WeightColumn), _weightColumn, DefaultColumnNames.Weight);
             var name = TrainUtils.MatchNameOrDefaultOrNull(ch, schema, nameof(Arguments.NameColumn), _nameColumn, DefaultColumnNames.Name);
 
-            TrainUtils.AddNormalizerIfNeeded(Host, ch, trainer, ref view, feature, Args.NormalizeFeatures);
+            TrainUtils.AddNormalizerIfNeeded(Host, ch, trainer, ref view, feature, ImplOptions.NormalizeFeatures);
 
             ch.Trace("Binding columns");
 
-            var customCols = TrainUtils.CheckAndGenerateCustomColumns(ch, Args.CustomColumn);
+            var customCols = TrainUtils.CheckAndGenerateCustomColumns(ch, ImplOptions.CustomColumns);
             var data = new RoleMappedData(view, label, feature, group, weight, name, customCols);
 
             // REVIEW: Unify the code that creates validation examples in Train, TrainTest and CV commands.
             RoleMappedData validData = null;
-            if (!string.IsNullOrWhiteSpace(Args.ValidationFile))
+            if (!string.IsNullOrWhiteSpace(ImplOptions.ValidationFile))
             {
                 if (!trainer.Info.SupportsValidation)
                 {
@@ -169,21 +173,40 @@ namespace Microsoft.ML.Runtime.Data
                 else
                 {
                     ch.Trace("Constructing the validation pipeline");
-                    IDataView validPipe = CreateRawLoader(dataFile: Args.ValidationFile);
+                    IDataView validPipe = CreateRawLoader(dataFile: ImplOptions.ValidationFile);
                     validPipe = ApplyTransformUtils.ApplyAllTransformsToData(Host, view, validPipe);
                     validData = new RoleMappedData(validPipe, data.Schema.GetColumnRoleNames());
                 }
             }
 
-            var predictor = TrainUtils.Train(Host, ch, data, trainer, validData,
-                Args.Calibrator, Args.MaxCalibrationExamples, Args.CacheData, inputPredictor);
+            // In addition to the training set, some trainers can accept two extra data sets, validation set and test set,
+            // in training phase. The major difference between validation set and test set is that training process may
+            // indirectly use validation set to improve the model but the learned model should totally independent of test set.
+            // Similar to validation set, the trainer can report the scores computed using test set.
+            RoleMappedData testDataUsedInTrainer = null;
+            if (!string.IsNullOrWhiteSpace(ImplOptions.TestFile))
+            {
+                // In contrast to the if-else block for validation above, we do not throw a warning if test file is provided
+                // because this is TrainTest command.
+                if (trainer.Info.SupportsTest)
+                {
+                    ch.Trace("Constructing the test pipeline");
+                    IDataView testPipeUsedInTrainer = CreateRawLoader(dataFile: ImplOptions.TestFile);
+                    testPipeUsedInTrainer = ApplyTransformUtils.ApplyAllTransformsToData(Host, view, testPipeUsedInTrainer);
+                    testDataUsedInTrainer = new RoleMappedData(testPipeUsedInTrainer, data.Schema.GetColumnRoleNames());
+                }
+            }
 
-            using (var file = Host.CreateOutputFile(Args.OutputModelFile))
+            var predictor = TrainUtils.Train(Host, ch, data, trainer, validData,
+                ImplOptions.Calibrator, ImplOptions.MaxCalibrationExamples, ImplOptions.CacheData, inputPredictor, testDataUsedInTrainer);
+
+            using (var file = Host.CreateOutputFile(ImplOptions.OutputModelFile))
                 TrainUtils.SaveModel(Host, ch, file, predictor, data, cmd);
         }
     }
 
-    public static class TrainUtils
+    [BestFriend]
+    internal static class TrainUtils
     {
         public static void CheckTrainer(IExceptionContext ectx, IComponentFactory<ITrainer> trainer, string dataFile)
         {
@@ -200,7 +223,7 @@ namespace Microsoft.ML.Runtime.Data
         /// Else, if the user name equals the default name return null.
         /// Else, throw an error.
         /// </summary>
-        public static string MatchNameOrDefaultOrNull(IExceptionContext ectx, ISchema schema, string argName, string userName, string defaultName)
+        public static string MatchNameOrDefaultOrNull(IExceptionContext ectx, DataViewSchema schema, string argName, string userName, string defaultName)
         {
             Contracts.CheckValueOrNull(ectx);
             ectx.CheckValue(schema, nameof(schema));
@@ -221,21 +244,19 @@ namespace Microsoft.ML.Runtime.Data
         }
 
         public static IPredictor Train(IHostEnvironment env, IChannel ch, RoleMappedData data, ITrainer trainer,
-            ICalibratorTrainerFactory calibrator, int maxCalibrationExamples)
+            IComponentFactory<ICalibratorTrainer> calibrator, int maxCalibrationExamples)
         {
-            var caliTrainer = calibrator?.CreateComponent(env);
-            return TrainCore(env, ch, data, trainer, null, caliTrainer, maxCalibrationExamples, false);
+            return TrainCore(env, ch, data, trainer, null, calibrator, maxCalibrationExamples, false);
         }
 
         public static IPredictor Train(IHostEnvironment env, IChannel ch, RoleMappedData data, ITrainer trainer, RoleMappedData validData,
-            IComponentFactory<ICalibratorTrainer> calibrator, int maxCalibrationExamples, bool? cacheData, IPredictor inputPredictor = null)
+            IComponentFactory<ICalibratorTrainer> calibrator, int maxCalibrationExamples, bool? cacheData, IPredictor inputPredictor = null, RoleMappedData testData = null)
         {
-            ICalibratorTrainer caliTrainer = calibrator?.CreateComponent(env);
-            return TrainCore(env, ch, data, trainer, validData, caliTrainer, maxCalibrationExamples, cacheData, inputPredictor);
+            return TrainCore(env, ch, data, trainer, validData, calibrator, maxCalibrationExamples, cacheData, inputPredictor, testData);
         }
 
         private static IPredictor TrainCore(IHostEnvironment env, IChannel ch, RoleMappedData data, ITrainer trainer, RoleMappedData validData,
-            ICalibratorTrainer calibrator, int maxCalibrationExamples, bool? cacheData, IPredictor inputPredictor = null)
+            IComponentFactory<ICalibratorTrainer> calibrator, int maxCalibrationExamples, bool? cacheData, IPredictor inputPredictor = null, RoleMappedData testData = null)
         {
             Contracts.CheckValue(env, nameof(env));
             env.CheckValue(ch, nameof(ch));
@@ -256,8 +277,9 @@ namespace Microsoft.ML.Runtime.Data
                 inputPredictor = null;
             }
             ch.Assert(validData == null || trainer.Info.SupportsValidation);
-            var predictor = trainer.Train(new TrainContext(data, validData, inputPredictor));
-            return CalibratorUtils.TrainCalibratorIfNeeded(env, ch, calibrator, maxCalibrationExamples, trainer, predictor, data);
+            var predictor = trainer.Train(new TrainContext(data, validData, testData, inputPredictor));
+            var caliTrainer = calibrator?.CreateComponent(env);
+            return CalibratorUtils.TrainCalibratorIfNeeded(env, ch, caliTrainer, maxCalibrationExamples, trainer, predictor, data);
         }
 
         public static bool TryLoadPredictor(IChannel ch, IHostEnvironment env, string inputModelFile, out IPredictor inputPredictor)
@@ -339,7 +361,7 @@ namespace Microsoft.ML.Runtime.Data
 
                     ch2.Trace("Saving loader and transformations");
                     var dataPipe = data.Data;
-                    if (dataPipe is IDataLoader)
+                    if (dataPipe is ILegacyDataLoader)
                         ModelSaveContext.SaveModel(rep, dataPipe, ModelFileUtils.DirDataLoaderModel);
                     else
                         SaveDataPipe(env, rep, dataPipe);
@@ -356,7 +378,6 @@ namespace Microsoft.ML.Runtime.Data
 
                     rep.Commit();
                 }
-                ch2.Done();
             }
         }
 
@@ -374,7 +395,7 @@ namespace Microsoft.ML.Runtime.Data
             var xfs = BacktrackPipe(dataPipe, out pipeStart);
 
             Action<ModelSaveContext> saveAction;
-            if (!blankLoader && pipeStart is IDataLoader loader)
+            if (!blankLoader && pipeStart is ILegacyDataLoader loader)
                 saveAction = loader.Save;
             else
             {
@@ -385,7 +406,7 @@ namespace Microsoft.ML.Runtime.Data
 
             using (var ctx = ModelFileUtils.GetDataModelSavingContext(repositoryWriter))
             {
-                CompositeDataLoader.SavePipe(env, ctx, saveAction, xfs);
+                LegacyCompositeDataLoader.SavePipe(env, ctx, saveAction, xfs);
                 ctx.Done();
             }
         }
@@ -443,7 +464,7 @@ namespace Microsoft.ML.Runtime.Data
             {
                 if (autoNorm != NormalizeOption.Yes)
                 {
-                    if (!trainer.Info.NeedNormalization || schema.IsNormalized(featCol))
+                    if (!trainer.Info.NeedNormalization || schema[featCol].IsNormalized())
                     {
                         ch.Info("Not adding a normalizer.");
                         return false;
@@ -458,8 +479,8 @@ namespace Microsoft.ML.Runtime.Data
                 IDataView ApplyNormalizer(IHostEnvironment innerEnv, IDataView input)
                     => NormalizeTransform.CreateMinMaxNormalizer(innerEnv, input, featureColumn);
 
-                if (view is IDataLoader loader)
-                    view = CompositeDataLoader.ApplyTransform(env, loader, tag: null, creationArgs: null, ApplyNormalizer);
+                if (view is ILegacyDataLoader loader)
+                    view = LegacyCompositeDataLoader.ApplyTransform(env, loader, tag: null, creationArgs: null, ApplyNormalizer);
                 else
                     view = ApplyNormalizer(env, view);
                 return true;
@@ -497,9 +518,9 @@ namespace Microsoft.ML.Runtime.Data
                 return Enumerable.Empty<KeyValuePair<ColumnRole, string>>();
             foreach (var kindName in customColumnArg)
             {
-                ectx.CheckUserArg(!string.IsNullOrWhiteSpace(kindName.Value), nameof(TrainCommand.Arguments.CustomColumn), "Names for columns with custom kind must not be empty");
+                ectx.CheckUserArg(!string.IsNullOrWhiteSpace(kindName.Value), nameof(TrainCommand.Arguments.CustomColumns), "Names for columns with custom kind must not be empty");
                 if (string.IsNullOrWhiteSpace(kindName.Key))
-                    throw ectx.ExceptUserArg(nameof(TrainCommand.Arguments.CustomColumn), "Custom column with name '{0}' needs a kind. Use col[<Kind>]={0}", kindName.Value);
+                    throw ectx.ExceptUserArg(nameof(TrainCommand.Arguments.CustomColumns), "Custom column with name '{0}' needs a kind. Use col[<Kind>]={0}", kindName.Value);
             }
             return customColumnArg.Select(kindName => new ColumnRole(kindName.Key).Bind(kindName.Value));
         }

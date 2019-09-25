@@ -2,14 +2,12 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 using System;
+using Microsoft.ML;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.EntryPoints;
+using Microsoft.ML.Internal.Internallearn;
 using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Ensemble.OutputCombiners;
-using Microsoft.ML.Runtime.EntryPoints;
-using Microsoft.ML.Runtime.FastTree;
-using Microsoft.ML.Runtime.Internal.Internallearn;
-using Microsoft.ML.Runtime.Model;
+using Microsoft.ML.Trainers.Ensemble;
 
 [assembly: LoadableClass(typeof(RegressionStacking), typeof(RegressionStacking.Arguments), typeof(SignatureCombiner),
     Stacking.UserName, RegressionStacking.LoadName)]
@@ -17,11 +15,11 @@ using Microsoft.ML.Runtime.Model;
 [assembly: LoadableClass(typeof(RegressionStacking), null, typeof(SignatureLoadModel),
     Stacking.UserName, RegressionStacking.LoaderSignature)]
 
-namespace Microsoft.ML.Runtime.Ensemble.OutputCombiners
+namespace Microsoft.ML.Trainers.Ensemble
 {
-    using TScalarPredictor = IPredictorProducing<Single>;
+    using TScalarTrainer = ITrainerEstimator<ISingleFeaturePredictionTransformer<IPredictorProducing<float>>, IPredictorProducing<float>>;
 
-    public sealed class RegressionStacking : BaseScalarStacking, IRegressionOutputCombiner, ICanSaveModel
+    internal sealed class RegressionStacking : BaseScalarStacking, IRegressionOutputCombiner
     {
         public const string LoadName = "RegressionStacking";
         public const string LoaderSignature = "RegressionStacking";
@@ -37,24 +35,21 @@ namespace Microsoft.ML.Runtime.Ensemble.OutputCombiners
                 loaderAssemblyName: typeof(RegressionStacking).Assembly.FullName);
         }
 
+#pragma warning disable CS0649 // The fields will still be set via the reflection driven mechanisms.
         [TlcModule.Component(Name = LoadName, FriendlyName = Stacking.UserName)]
         public sealed class Arguments : ArgumentsBase, ISupportRegressionOutputCombinerFactory
         {
+            // REVIEW: If we make this public again it should be an *estimator* of this type of predictor, rather than the (deprecated) ITrainer.
             [Argument(ArgumentType.Multiple, HelpText = "Base predictor for meta learning", ShortName = "bp", SortOrder = 50,
                 Visibility = ArgumentAttribute.VisibilityType.CmdLineOnly, SignatureType = typeof(SignatureRegressorTrainer))]
             [TGUI(Label = "Base predictor")]
-            public IComponentFactory<ITrainer<TScalarPredictor>> BasePredictorType;
+            public IComponentFactory<TScalarTrainer> BasePredictorType;
 
-            internal override IComponentFactory<ITrainer<TScalarPredictor>> GetPredictorFactory() => BasePredictorType;
-
-            public Arguments()
-            {
-                BasePredictorType = ComponentFactoryUtils.CreateFromFunction(
-                    env => new FastTreeRegressionTrainer(env, DefaultColumnNames.Label, DefaultColumnNames.Features));
-            }
+            internal override IComponentFactory<TScalarTrainer> GetPredictorFactory() => BasePredictorType;
 
             public IRegressionOutputCombiner CreateComponent(IHostEnvironment env) => new RegressionStacking(env, this);
         }
+#pragma warning restore CS0649
 
         public RegressionStacking(IHostEnvironment env, Arguments args)
             : base(env, LoaderSignature, args)

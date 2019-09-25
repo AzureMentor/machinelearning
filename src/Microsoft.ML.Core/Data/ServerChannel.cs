@@ -4,9 +4,7 @@
 
 using System;
 using System.Collections.Generic;
-using System.Reflection;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.EntryPoints;
+using Microsoft.ML.EntryPoints;
 
 namespace Microsoft.ML.Runtime
 {
@@ -19,7 +17,8 @@ namespace Microsoft.ML.Runtime
     /// delegates will be published in some fashion, with the target scenario being
     /// that the library will publish some sort of restful API.
     /// </summary>
-    public sealed class ServerChannel : ServerChannel.IPendingBundleNotification, IDisposable
+    [BestFriend]
+    internal sealed class ServerChannel : ServerChannel.IPendingBundleNotification, IDisposable
     {
         // See ServerChannel.md for a more elaborate discussion of high level usage and design.
         private readonly IChannelProvider _chp;
@@ -195,7 +194,7 @@ namespace Microsoft.ML.Runtime
         /// When a <see cref="ServerChannel"/> is created, the creation method will send an implementation
         /// is a notification sent through an <see cref="IPipe{IPendingBundleNotification}"/>, to indicate that
         /// a <see cref="Bundle"/> may be pending soon. Listeners that want to receive the bundle to
-        /// expose it, e.g., a web service, should register this interest by passing in an action to be called.
+        /// expose it, for example, a web service, should register this interest by passing in an action to be called.
         /// If no listener registers interest, the server channel that sent the notification will act
         /// differently by, say, acting as a no-op w.r.t. client calls to it.
         /// </summary>
@@ -250,7 +249,8 @@ namespace Microsoft.ML.Runtime
         }
     }
 
-    public static class ServerChannelUtilities
+    [BestFriend]
+    internal static class ServerChannelUtilities
     {
         /// <summary>
         /// Convenience method for <see cref="ServerChannel.Start"/> that looks more idiomatic to typical

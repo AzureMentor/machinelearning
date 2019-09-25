@@ -2,14 +2,9 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Float = System.Single;
 
-using System;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Runtime.PCA;
 
-namespace Microsoft.ML.Runtime.Internal.Internallearn.Test
+namespace Microsoft.ML.Internal.Internallearn.Test
 {
 #if OLD_TESTS // REVIEW: Does any of this need ported?
     public class CreateInstancesTests : BaseTestBaseline
@@ -47,7 +42,7 @@ namespace Microsoft.ML.Runtime.Internal.Internallearn.Test
                     outFile, statsFile, outTestFile, testStatsFile, outValidFile, validStatsFile);
             argsStr += " /writer TextInstanceWriter{/stats=+} /disableTracking=+";
             var args = new TLCArguments();
-            Assert.IsTrue(CmdParser.ParseArguments(argsStr, args));
+            Assert.True(CmdParser.ParseArguments(argsStr, args));
 
             RunExperiments.Run(args);
 
@@ -80,7 +75,7 @@ namespace Microsoft.ML.Runtime.Internal.Internallearn.Test
                     trainData, breast.extraSettings, outFile, statsFile);
             argsStr += " writer=TextInstanceWriter{stats+} disableTracking+";
             var args = new TLCArguments();
-            Assert.IsTrue(CmdParser.ParseArguments(argsStr, args));
+            Assert.True(CmdParser.ParseArguments(argsStr, args));
 
             RunExperiments.Run(args);
 
@@ -108,7 +103,7 @@ namespace Microsoft.ML.Runtime.Internal.Internallearn.Test
                     "/c=CreateInstances {0} /test={1} /norm=MinMaxNormalizer /{2} /cifile={3} /citestfile={4}",
                     trainData, testData, transArgs, outFile1, outTestFile1);
             var args1 = new TLCArguments();
-            Assert.IsTrue(CmdParser.ParseArguments(argsStr1, args1));
+            Assert.True(CmdParser.ParseArguments(argsStr1, args1));
 
             RunExperiments.Run(args1);
 
@@ -116,7 +111,7 @@ namespace Microsoft.ML.Runtime.Internal.Internallearn.Test
                 "/c=CreateInstances {0} /test={1} /inst Trans{{trans=MinMaxNormalizer {2}}} /cifile={3} /citestfile={4}",
                 trainData, testData, transArgs, outFile2, outTestFile2);
             var args2 = new TLCArguments();
-            Assert.IsTrue(CmdParser.ParseArguments(argsStr2, args2));
+            Assert.True(CmdParser.ParseArguments(argsStr2, args2));
 
             RunExperiments.Run(args2);
 
@@ -133,7 +128,7 @@ namespace Microsoft.ML.Runtime.Internal.Internallearn.Test
 
         private void CompareInstances(TlcTextInstances instances1, TlcTextInstances instances2)
         {
-            Assert.IsTrue(instances1.Schema.NumFeatures == instances2.Schema.NumFeatures, "mismatch on schema features");
+            Assert.True(instances1.Schema.NumFeatures == instances2.Schema.NumFeatures, "mismatch on schema features");
 
             using (var e1 = instances1.GetEnumerator())
             using (var e2 = instances2.GetEnumerator())
@@ -142,16 +137,16 @@ namespace Microsoft.ML.Runtime.Internal.Internallearn.Test
                 {
                     bool b1 = e1.MoveNext();
                     bool b2 = e2.MoveNext();
-                    Assert.IsTrue(b1 == b2, "different number of instances");
+                    Assert.True(b1 == b2, "different number of instances");
                     if (!b1)
                         break;
                     var inst1 = e1.Current;
                     var inst2 = e2.Current;
-                    Assert.IsTrue(inst1.Label == inst2.Label, "mismatch on instance label");
-                    Assert.IsTrue(inst1.NumFeatures == inst2.NumFeatures, "mismatch on number of features");
-                    Assert.IsTrue(inst1.NumFeatures == instances1.Schema.NumFeatures, "mismatch on number of instance vs. schema features");
-                    Assert.IsTrue(Utils.AreEqual(inst1.Features.Values, inst2.Features.Values), "mismatch on feature values");
-                    Assert.IsTrue(Utils.AreEqual(inst1.Features.Indices, inst2.Features.Indices), "mismatch on feature indices");
+                    Assert.True(inst1.Label == inst2.Label, "mismatch on instance label");
+                    Assert.True(inst1.NumFeatures == inst2.NumFeatures, "mismatch on number of features");
+                    Assert.True(inst1.NumFeatures == instances1.Schema.NumFeatures, "mismatch on number of instance vs. schema features");
+                    Assert.True(Utils.AreEqual(inst1.Features.Values, inst2.Features.Values), "mismatch on feature values");
+                    Assert.True(Utils.AreEqual(inst1.Features.Indices, inst2.Features.Indices), "mismatch on feature indices");
                 }
             }
         }
@@ -159,9 +154,9 @@ namespace Microsoft.ML.Runtime.Internal.Internallearn.Test
         [Fact, TestCategory("CreateInstances"), TestCategory("FeatureTransformer")]
         public void TestPcaTransform()
         {
-            // Force Microsoft.ML.Runtime.PCA assembly to be loaded into the AppDomain so 
+            // Force Microsoft.ML.PCA assembly to be loaded into the AppDomain so 
             // ReflectionUtils.FindClassCore does not return null when called by ReflectionUtils.CreateInstance
-            Assert.AreEqual(typeof(PCAPredictor).Name, "PCAPredictor");
+            Assert.Equal(typeof(PCAPredictor).Name, "PCAPredictor");
 
             string trainData = GetDataPath(TestDatasets.mnistTiny28.trainFilename);
             string fileName = TestContext.TestName + "-Train.txt";
@@ -175,7 +170,7 @@ namespace Microsoft.ML.Runtime.Internal.Internallearn.Test
                     pcaTransformArgs,
                     outFile);
             var args1 = new TLCArguments();
-            Assert.IsTrue(CmdParser.ParseArguments(argsStr1, args1));
+            Assert.True(CmdParser.ParseArguments(argsStr1, args1));
 
             RunExperiments.Run(args1);
             CheckEquality(Dir, fileName);
@@ -185,14 +180,14 @@ namespace Microsoft.ML.Runtime.Internal.Internallearn.Test
             Double[] l1norms = new Double[rank];
             foreach (Instance instance in outputInstances)
             {
-                Assert.IsTrue(instance.Features.Count == rank);
+                Assert.True(instance.Features.Count == rank);
                 for (int i = 0; i < instance.Features.Values.Length; i++)
                     l1norms[i] += (instance.Features.Values[i] < 0 ? -instance.Features.Values[i] : instance.Features.Values[i]);
             }
 
             for (int i = 0; i < l1norms.Length - 1; i++)
             {
-                Assert.IsTrue(l1norms[i] > l1norms[i + 1]);
+                Assert.True(l1norms[i] > l1norms[i + 1]);
             }
 
             Done();
@@ -210,7 +205,7 @@ namespace Microsoft.ML.Runtime.Internal.Internallearn.Test
                 dataModelFile,
                 ciFile);
             var args = new TLCArguments();
-            Assert.IsTrue(CmdParser.ParseArguments(argsString, args));
+            Assert.True(CmdParser.ParseArguments(argsString, args));
             RunExperiments.Run(args);
 
             string ciFailFile = DeleteOutputPath(Dir, TestContext.TestName + "-ci-fail.tsv");
@@ -220,7 +215,7 @@ namespace Microsoft.ML.Runtime.Internal.Internallearn.Test
                 dataModelFile,
                 ciFailFile);
             args = new TLCArguments();
-            Assert.IsTrue(CmdParser.ParseArguments(argsString, args));
+            Assert.True(CmdParser.ParseArguments(argsString, args));
             try
             {
                 RunExperiments.Run(args);
@@ -228,7 +223,7 @@ namespace Microsoft.ML.Runtime.Internal.Internallearn.Test
             }
             catch (Exception ex)
             {
-                Assert.IsTrue(ex.GetBaseException() is InvalidOperationException);
+                Assert.True(ex.GetBaseException() is InvalidOperationException);
             }
 
             Done();

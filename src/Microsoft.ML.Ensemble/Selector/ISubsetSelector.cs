@@ -4,23 +4,24 @@
 
 using System;
 using System.Collections.Generic;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.EntryPoints;
+using Microsoft.ML.Data;
+using Microsoft.ML.EntryPoints;
+using Microsoft.ML.Runtime;
 
-namespace Microsoft.ML.Runtime.Ensemble.Selector
+namespace Microsoft.ML.Trainers.Ensemble
 {
-    public interface ISubsetSelector
+    internal interface ISubsetSelector
     {
         void Initialize(RoleMappedData data, int size, int batchSize, Single validationDatasetProportion);
-        IEnumerable<Batch> GetBatches(IRandom rand);
-        IEnumerable<Subset> GetSubsets(Batch batch, IRandom rand);
+        IEnumerable<Batch> GetBatches(Random rand);
+        IEnumerable<Subset> GetSubsets(Batch batch, Random rand);
         RoleMappedData GetTestData(Subset subset, Batch batch);
     }
 
-    public delegate void SignatureEnsembleDataSelector();
+    internal delegate void SignatureEnsembleDataSelector();
 
     [TlcModule.ComponentKind("EnsembleSubsetSelector")]
-    public interface ISupportSubsetSelectorFactory : IComponentFactory<ISubsetSelector>
+    internal interface ISupportSubsetSelectorFactory : IComponentFactory<ISubsetSelector>
     {
     }
 }

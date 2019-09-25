@@ -2,196 +2,312 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Float = System.Single;
-
+using System;
+using Microsoft.ML;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Data;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Numeric;
 using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Runtime.Model;
+using Microsoft.ML.Transforms;
 
-[assembly: LoadableClass(typeof(GaussianFourierSampler), typeof(GaussianFourierSampler.Arguments), typeof(SignatureFourierDistributionSampler),
-    "Gaussian Kernel", GaussianFourierSampler.LoadName, "Gaussian")]
+[assembly: LoadableClass(typeof(GaussianKernel), typeof(GaussianKernel.Options), typeof(SignatureKernelBase),
+    "Gaussian Kernel", GaussianKernel.LoadName, "Gaussian")]
 
-[assembly: LoadableClass(typeof(LaplacianFourierSampler), typeof(LaplacianFourierSampler.Arguments), typeof(SignatureFourierDistributionSampler),
-    "Laplacian Kernel", LaplacianFourierSampler.RegistrationName, "Laplacian")]
+[assembly: LoadableClass(typeof(LaplacianKernel), typeof(LaplacianKernel.Options), typeof(SignatureKernelBase),
+    "Laplacian Kernel", LaplacianKernel.LoadName, "Laplacian")]
 
 // This is for deserialization from a binary model file.
-[assembly: LoadableClass(typeof(GaussianFourierSampler), null, typeof(SignatureLoadModel),
-    "Gaussian Fourier Sampler Executor", "GaussianSamplerExecutor", GaussianFourierSampler.LoaderSignature)]
+[assembly: LoadableClass(typeof(GaussianKernel.RandomNumberGenerator), null, typeof(SignatureLoadModel),
+    "Gaussian Fourier Sampler Executor", "GaussianSamplerExecutor", GaussianKernel.RandomNumberGenerator.LoaderSignature)]
 
 // This is for deserialization from a binary model file.
-[assembly: LoadableClass(typeof(LaplacianFourierSampler), null, typeof(SignatureLoadModel),
-    "Laplacian Fourier Sampler Executor", "LaplacianSamplerExecutor", LaplacianFourierSampler.LoaderSignature)]
+[assembly: LoadableClass(typeof(LaplacianKernel.RandomNumberGenerator), null, typeof(SignatureLoadModel),
+    "Laplacian Fourier Sampler Executor", "LaplacianSamplerExecutor", LaplacianKernel.RandomNumberGenerator.LoaderSignature)]
 
-// REVIEW: Roll all of this in with the RffTransform.
-namespace Microsoft.ML.Runtime.Data
+namespace Microsoft.ML.Transforms
 {
     /// <summary>
-    /// Signature for an IFourierDistributionSampler constructor.
+    /// Signature for a <see cref="KernelBase"/> constructor.
     /// </summary>
-    public delegate void SignatureFourierDistributionSampler(Float avgDist);
+    [BestFriend]
+    internal delegate void SignatureKernelBase();
 
-    public interface IFourierDistributionSampler : ICanSaveModel
+    /// <summary>
+    /// This class indicates which kernel should be approximated by the <see cref="ApproximatedKernelTransformer"/>.
+    /// <seealso cref="ApproximatedKernelMappingEstimator"/>.
+    /// </summary>
+    public abstract class KernelBase
     {
-        Float Next(IRandom rand);
+        // Private protected constructor, so that external devs cannot inherit from this class.
+        private protected KernelBase()
+        {
+        }
+
+        /// <summary>
+        /// The kernels deriving from this class are shift-invariant, and each of them depends on a different distance between
+        /// its inputs. The <see cref="GaussianKernel"/> depends on the L2 distance, and the <see cref="LaplacianKernel"/> depends
+        /// on the L1 distance.
+        /// </summary>
+        internal abstract float Distance(in VBuffer<float> first, in VBuffer<float> second);
+
+        /// <summary>
+        /// This method returns an object that can sample from the non-negative measure that is the Fourier transform of this kernel.
+        /// </summary>
+        internal abstract FourierRandomNumberGeneratorBase GetRandomNumberGenerator(float averageDistance);
     }
 
-    public sealed class GaussianFourierSampler : IFourierDistributionSampler
+    /// <summary>
+    /// The Fourier transform of a continuous positive definite kernel is a non-negative measure
+    /// (<a href="https://en.wikipedia.org/wiki/Bochner%27s_theorem">Bochner's theorem</a>). This class
+    /// samples numbers from the non-negative measure corresponding to the given kernel.
+    /// </summary>
+    internal abstract class FourierRandomNumberGeneratorBase
     {
-        private readonly IHost _host;
+        public abstract float Next(Random rand);
+    }
 
-        public class Arguments
+    /// <summary>
+    /// The Gaussian kernel.
+    /// </summary>
+    /// <remarks>
+    /// <format type="text/markdown"><![CDATA[
+    /// - The Gaussian kernel is defined as $k(x,y) = \exp(-\gamma||x-y||^2)$.
+    /// ]]></format>
+    /// </remarks>
+    // The Fourier transform of this kernel is the <a href="https://en.wikipedia.org/wiki/Normal_distribution">Normal</a> distribution with variance $2 \gamma$
+    // (<a href="https://en.wikipedia.org/wiki/Bochner%27s_theorem">Bochner's theorem</a>)).
+    public sealed class GaussianKernel : KernelBase
+    {
+        internal sealed class Options : IComponentFactory<KernelBase>
         {
             [Argument(ArgumentType.AtMostOnce, HelpText = "gamma in the kernel definition: exp(-gamma*||x-y||^2 / r^2). r is an estimate of the average intra-example distance", ShortName = "g")]
-            public Float Gamma = 1;
+            public float Gamma = 1;
+
+            public KernelBase CreateComponent(IHostEnvironment env) => new GaussianKernel(env, this);
         }
 
-        public const string LoaderSignature = "RandGaussFourierExec";
-        private static VersionInfo GetVersionInfo()
+        internal const string LoadName = "GaussianRandom";
+
+        private readonly float _gamma;
+
+        /// <summary>
+        /// Create a new instance of a GaussianKernel.
+        /// </summary>
+        /// <param name="gamma">The coefficient in the exponent of the kernel function. It should be positive.</param>
+        public GaussianKernel(float gamma = 1)
         {
-            return new VersionInfo(
-                modelSignature: "RND GAUS",
-                verWrittenCur: 0x00010001, // Initial
-                verReadableCur: 0x00010001,
-                verWeCanReadBack: 0x00010001,
-                loaderSignature: LoaderSignature,
-                loaderAssemblyName: typeof(GaussianFourierSampler).Assembly.FullName);
+            Contracts.CheckParam(gamma > 0, nameof(gamma));
+            _gamma = gamma;
         }
 
-        public const string LoadName = "GaussianRandom";
-
-        private readonly Float _gamma;
-
-        public GaussianFourierSampler(IHostEnvironment env, Arguments args, Float avgDist)
+        internal GaussianKernel(IHostEnvironment env, Options options)
         {
-            Contracts.CheckValue(env, nameof(env));
-            _host = env.Register(LoadName);
-            _host.CheckValue(args, nameof(args));
+            Contracts.CheckValueOrNull(env, nameof(env));
+            env.CheckValue(options, nameof(options));
 
-            _gamma = args.Gamma / avgDist;
+            _gamma = options.Gamma;
         }
 
-        public static GaussianFourierSampler Create(IHostEnvironment env, ModelLoadContext ctx)
+        internal override float Distance(in VBuffer<float> first, in VBuffer<float> second)
         {
-            Contracts.CheckValue(env, nameof(env));
-            env.CheckValue(ctx, nameof(ctx));
-            ctx.CheckAtModel(GetVersionInfo());
-            return new GaussianFourierSampler(env, ctx);
+            return VectorUtils.L2DistSquared(in first, in second);
         }
 
-        private GaussianFourierSampler(IHostEnvironment env, ModelLoadContext ctx)
+        internal override FourierRandomNumberGeneratorBase GetRandomNumberGenerator(float averageDistance)
         {
-            Contracts.AssertValue(env);
-            _host = env.Register(LoadName);
-            _host.AssertValue(ctx);
-
-            // *** Binary format ***
-            // int: sizeof(Float)
-            // Float: gamma
-
-            int cbFloat = ctx.Reader.ReadInt32();
-            _host.CheckDecode(cbFloat == sizeof(Float));
-
-            _gamma = ctx.Reader.ReadFloat();
-            _host.CheckDecode(FloatUtils.IsFinite(_gamma));
+            Contracts.Assert(averageDistance > 0);
+            return new RandomNumberGenerator(_gamma, averageDistance);
         }
 
-        public void Save(ModelSaveContext ctx)
+        internal sealed class RandomNumberGenerator : FourierRandomNumberGeneratorBase, ICanSaveModel
         {
-            ctx.SetVersionInfo(GetVersionInfo());
+            internal const string LoaderSignature = "RandGaussFourierExec";
+            private static VersionInfo GetVersionInfo()
+            {
+                return new VersionInfo(
+                    modelSignature: "RND GAUS",
+                    verWrittenCur: 0x00010001, // Initial
+                    verReadableCur: 0x00010001,
+                    verWeCanReadBack: 0x00010001,
+                    loaderSignature: LoaderSignature,
+                    loaderAssemblyName: typeof(RandomNumberGenerator).Assembly.FullName);
+            }
 
-            // *** Binary format ***
-            // int: sizeof(Float)
-            // Float: gamma
+            private readonly float _gamma;
 
-            ctx.Writer.Write(sizeof(Float));
-            _host.Assert(FloatUtils.IsFinite(_gamma));
-            ctx.Writer.Write(_gamma);
-        }
+            public RandomNumberGenerator(float gamma, float averageDistance)
+                : base()
+            {
+                Contracts.Assert(gamma > 0);
+                Contracts.Assert(averageDistance > 0);
+                _gamma = gamma / averageDistance;
+            }
 
-        public Float Next(IRandom rand)
-        {
-            return (Float)Stats.SampleFromGaussian(rand) * MathUtils.Sqrt(2 * _gamma);
+            private static RandomNumberGenerator Create(IHostEnvironment env, ModelLoadContext ctx)
+            {
+                Contracts.CheckValue(env, nameof(env));
+                env.CheckValue(ctx, nameof(ctx));
+                ctx.CheckAtModel(GetVersionInfo());
+                return new RandomNumberGenerator(env, ctx);
+            }
+
+            private RandomNumberGenerator(IHostEnvironment env, ModelLoadContext ctx)
+            {
+                Contracts.AssertValue(env);
+                env.AssertValue(ctx);
+
+                // *** Binary format ***
+                // int: sizeof(Float)
+                // Float: gamma
+
+                int cbFloat = ctx.Reader.ReadInt32();
+                env.CheckDecode(cbFloat == sizeof(float));
+
+                _gamma = ctx.Reader.ReadFloat();
+                env.CheckDecode(FloatUtils.IsFinite(_gamma));
+            }
+
+            void ICanSaveModel.Save(ModelSaveContext ctx)
+            {
+                ctx.SetVersionInfo(GetVersionInfo());
+
+                // *** Binary format ***
+                // int: sizeof(Float)
+                // Float: gamma
+
+                ctx.Writer.Write(sizeof(float));
+                Contracts.Assert(FloatUtils.IsFinite(_gamma));
+                ctx.Writer.Write(_gamma);
+            }
+
+            public override float Next(Random rand)
+            {
+                return (float)Stats.SampleFromGaussian(rand) * MathUtils.Sqrt(2 * _gamma);
+            }
         }
     }
 
-    public sealed class LaplacianFourierSampler : IFourierDistributionSampler
+    /// <summary>
+    /// The Laplacian kernel.
+    /// </summary>
+    /// <remarks>
+    /// <format type="text/markdown"><![CDATA[
+    /// - The Laplacian kernel is defined as $k(x,y)=\exp(-a||x-y||)$.
+    /// ]]></format>
+    /// </remarks>
+    // The Fourier transform of this kernel is the <a href="https://en.wikipedia.org/wiki/Cauchy_distribution">Cauchy</a> distribution with parameters $(0, a)$
+    // (<a href="https://en.wikipedia.org/wiki/Bochner%27s_theorem">Bochner's theorem</a>)).
+    public sealed class LaplacianKernel : KernelBase
     {
-        public class Arguments
+        internal sealed class Options : IComponentFactory<KernelBase>
         {
             [Argument(ArgumentType.AtMostOnce, HelpText = "a in the term exp(-a|x| / r). r is an estimate of the average intra-example L1 distance")]
-            public Float A = 1;
+            public float A = 1;
+
+            public KernelBase CreateComponent(IHostEnvironment env) => new LaplacianKernel(env, this);
         }
 
-        private static VersionInfo GetVersionInfo()
+        internal const string LoadName = "LaplacianRandom";
+
+        private readonly float _a;
+
+        /// <summary>
+        /// Create a new instance of a LaplacianKernel.
+        /// </summary>
+        /// <param name="a">The coefficient in the exponent of the kernel function.</param>
+        public LaplacianKernel(float a = 1)
         {
-            return new VersionInfo(
-                modelSignature: "RND LPLC",
-                verWrittenCur: 0x00010001, // Initial
-                verReadableCur: 0x00010001,
-                verWeCanReadBack: 0x00010001,
-                loaderSignature: LoaderSignature,
-                loaderAssemblyName: typeof(LaplacianFourierSampler).Assembly.FullName);
+            Contracts.CheckParam(a > 0, nameof(a));
+            _a = a;
         }
 
-        public const string LoaderSignature = "RandLaplacianFourierExec";
-        public const string RegistrationName = "LaplacianRandom";
-
-        private readonly IHost _host;
-        private readonly Float _a;
-
-        public LaplacianFourierSampler(IHostEnvironment env, Arguments args, Float avgDist)
-        {
-            Contracts.CheckValue(env, nameof(env));
-            _host = env.Register(RegistrationName);
-            _host.CheckValue(args, nameof(args));
-
-            _a = args.A / avgDist;
-        }
-
-        public static LaplacianFourierSampler Create(IHostEnvironment env, ModelLoadContext ctx)
+        internal LaplacianKernel(IHostEnvironment env, Options options)
         {
             Contracts.CheckValue(env, nameof(env));
-            env.CheckValue(ctx, nameof(ctx));
-            ctx.CheckAtModel(GetVersionInfo());
+            env.CheckValue(options, nameof(options));
 
-            return new LaplacianFourierSampler(env, ctx);
+            _a = options.A;
         }
 
-        private LaplacianFourierSampler(IHostEnvironment env, ModelLoadContext ctx)
+        internal override float Distance(in VBuffer<float> first, in VBuffer<float> second)
         {
-            Contracts.AssertValue(env);
-            _host = env.Register(RegistrationName);
-            _host.AssertValue(ctx);
-
-            // *** Binary format ***
-            // int: sizeof(Float)
-            // Float: a
-
-            int cbFloat = ctx.Reader.ReadInt32();
-            _host.CheckDecode(cbFloat == sizeof(Float));
-
-            _a = ctx.Reader.ReadFloat();
-            _host.CheckDecode(FloatUtils.IsFinite(_a));
+            return VectorUtils.L1Distance(in first, in second);
         }
 
-        public void Save(ModelSaveContext ctx)
+        internal override FourierRandomNumberGeneratorBase GetRandomNumberGenerator(float averageDistance)
         {
-            ctx.SetVersionInfo(GetVersionInfo());
-
-            // *** Binary format ***
-            // int: sizeof(Float)
-            // Float: a
-
-            ctx.Writer.Write(sizeof(Float));
-            _host.Assert(FloatUtils.IsFinite(_a));
-            ctx.Writer.Write(_a);
+            Contracts.Assert(averageDistance > 0);
+            return new RandomNumberGenerator(_a, averageDistance);
         }
 
-        public Float Next(IRandom rand)
+        internal sealed class RandomNumberGenerator : FourierRandomNumberGeneratorBase, ICanSaveModel
         {
-            return _a * Stats.SampleFromCauchy(rand);
+            private static VersionInfo GetVersionInfo()
+            {
+                return new VersionInfo(
+                    modelSignature: "RND LPLC",
+                    verWrittenCur: 0x00010001, // Initial
+                    verReadableCur: 0x00010001,
+                    verWeCanReadBack: 0x00010001,
+                    loaderSignature: LoaderSignature,
+                    loaderAssemblyName: typeof(RandomNumberGenerator).Assembly.FullName);
+            }
+
+            internal const string LoaderSignature = "RandLaplacianFourierExec";
+            internal const string RegistrationName = "LaplacianRandom";
+
+            private readonly float _a;
+
+            public RandomNumberGenerator(float a, float averageDistance)
+            {
+                Contracts.Assert(a > 0);
+                Contracts.Assert(averageDistance > 0);
+                _a = a / averageDistance;
+            }
+
+            private static RandomNumberGenerator Create(IHostEnvironment env, ModelLoadContext ctx)
+            {
+                Contracts.CheckValue(env, nameof(env));
+                env.CheckValue(ctx, nameof(ctx));
+                ctx.CheckAtModel(GetVersionInfo());
+
+                return new RandomNumberGenerator(env, ctx);
+            }
+
+            private RandomNumberGenerator(IHostEnvironment env, ModelLoadContext ctx)
+            {
+                Contracts.AssertValue(env);
+                env.AssertValue(ctx);
+
+                // *** Binary format ***
+                // int: sizeof(Float)
+                // Float: a
+
+                int cbFloat = ctx.Reader.ReadInt32();
+                env.CheckDecode(cbFloat == sizeof(float));
+
+                _a = ctx.Reader.ReadFloat();
+                env.CheckDecode(FloatUtils.IsFinite(_a));
+            }
+
+            void ICanSaveModel.Save(ModelSaveContext ctx)
+            {
+                ctx.SetVersionInfo(GetVersionInfo());
+
+                // *** Binary format ***
+                // int: sizeof(Float)
+                // Float: a
+
+                ctx.Writer.Write(sizeof(float));
+                Contracts.Assert(FloatUtils.IsFinite(_a));
+                ctx.Writer.Write(_a);
+            }
+
+            public override float Next(Random rand)
+            {
+                return _a * Stats.SampleFromCauchy(rand);
+            }
         }
     }
 }

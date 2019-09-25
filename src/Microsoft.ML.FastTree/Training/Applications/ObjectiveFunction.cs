@@ -6,10 +6,11 @@ using System;
 using System.Collections.Concurrent;
 using System.Linq;
 using System.Threading.Tasks;
+using Microsoft.ML.Runtime;
 
-namespace Microsoft.ML.Runtime.FastTree.Internal
+namespace Microsoft.ML.Trainers.FastTree
 {
-    public abstract class ObjectiveFunctionBase
+    internal abstract class ObjectiveFunctionBase
     {
         // buffer for gradient, weights and scores
         protected double[] Gradient;
@@ -27,7 +28,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
 
         protected const int QueryThreadChunkSize = 100;
 
-        public readonly Dataset Dataset;
+        internal readonly Dataset Dataset;
 
         public double[] Weights { get; protected set; }
 

@@ -313,10 +313,10 @@ are initialized using the pseudo-random number generator in an `IHost` that
 changes from one to another. But, that's a bit nit-picky.
 
 Note also: when we say functionally identical we include everything about it:
-not just the data, but the schema, its metadata, the implementation of
+not just the data, but the schema, its annotations, the implementation of
 shuffling, etc. For this reason, while serializing the data *model* has
 guarantees of consistency, serializing the *data* has no such guarantee: if
-you serialize data using the text saver, practically all metadata (except slot
+you serialize data using the text saver, practically all annotations (except slot
 names) will be completely lost, which can have implications on how some
 transforms and downstream processes work. Or: if you serialize data using the
 binary saver, suddenly it may become shufflable whereas it may not have been
@@ -327,7 +327,7 @@ ultimately limited by hardware and other runtime environment factors: the
 truth is, certain machines will, with identical programs with seemingly
 identical flows of execution result, *sometimes*, in subtly different answers
 where floating point values are concerned. Even on the same machine there are
-runtime considerations, e.g., when .NET's RyuJIT was introduced in VS2015, we
+runtime considerations, for example, when .NET's RyuJIT was introduced in VS2015, we
 had lots of test failures around our model consistency tests because the JIT
 was compiling the CLI just *slightly* differently. But, this sort of thing
 aside (which we can hardly help), we expect the models to be the same.
@@ -337,13 +337,13 @@ aside (which we can hardly help), we expect the models to be the same.
 When you create a loader you have the option of specifying not only *one* data
 input, but any number of data input files, including zero. But there's also a
 more general principle at work here with zero files: when deserializing a data
-loader from a data model with an `IMultiStreamSource` with `Count == 0` (e.g.,
+loader from a data model with an `IMultiStreamSource` with `Count == 0` (for example,
 as would be constructed with `new MultiFileSource(null)`), we have a protocol
 that *every* `IDataLoader` should work in that circumstance, and merely be a
 data view with no rows, but the same schema as it had when it was serialized.
-The purpose of this is that we often have circumstances were we need to
+The purpose of this is that we often have circumstances where we need to
 understand the schema of the data (what columns were produced, what the
-feature names are, etc.) when all we have is the data model. (E.g., the
+feature names are, etc.) when all we have is the data model. (For example, the
 `savemodel` command, and other things.)
 
 # Getters Must Fail for Invalid Types
@@ -403,7 +403,7 @@ over an `IDataView`: while cursoring, you should almost certainly not throw
 exceptions.
 
 Imagine you have a `TextLoader`. You might expect that if you have a parse
-error, e.g., you have a column of floats, and one of the rows has a value
+error, for example, you have a column of floats, and one of the rows has a value
 like, `"hi!"` or something otherwise uninterpretable, you would throw. Yet,
 consider the implications of lazy evaluation. If that column were not
 selected, the cursoring would *succeed*, because it would not look at that
@@ -425,7 +425,7 @@ could throw the exception requires that a certain column be made active, then
 you should not throw. Of course, there are extreme circumstances: for example,
 one cannot help but throw on a cursoring if, say, there is some weird system
 event, and if one somehow detects in a subsequent iteration that something is
-fundamentally broken then you can throw: e.g., the binary loader will throw if
+fundamentally broken then you can throw: for example, the binary loader will throw if
 it detects the file it is reading is corrupted, even if that corruption may
 not have been obvious immediately.
 
@@ -475,7 +475,7 @@ helpful).
 
 The schema contains information about the columns. As we see in [the design
 principles](IDataViewDesignPrinciples.md), it has index, data type, and
-optional metadata.
+optional annotations.
 
 While *programmatically* accesses to an `IDataView` are by index, from a
 user's perspective the indices are by name; most training algorithms
@@ -498,20 +498,20 @@ things like key-types and vector-types, when returned, should not be created
 in the function itself (thereby creating a new object every time), but rather
 stored somewhere and returned.
 
-## Metadata
+## Annotations
 
-Since metadata is *optional*, one is not obligated to necessarily produce it,
+Since annotations are *optional*, one is not obligated to necessarily produce it,
 or conform to any particular schemas for any particular kinds (beyond, say,
 the obvious things like making sure that the types and values are consistent).
 However, the flip side of that freedom given to *producers*, is that
 *consumers* are obligated, when processing a data view input, to react
-gracefully when metadata of a certain kind is absent, or not in a form that
-one expects. One should *never* fail when input metadata is in a form one does
+gracefully when an annotation of a certain kind is absent, or not in a form that
+one expects. One should *never* fail when input annotations are in a form one does
 not expect.
 
 To give a practical example of this: many transforms, learners, or other
 components that process `IDataView`s will do something with the slot names,
-but when the `SlotNames` metadata kind for a given column is either absent,
+but when the `SlotNames` annotation kind for a given column is either absent,
 *or* not of the right type (vectors of strings), *or* not of the right size
 (same length vectors as the input), the behavior is not to throw or yield
 errors or do anything of the kind, but to simply say, "oh, I don't really have

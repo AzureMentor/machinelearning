@@ -3,15 +3,17 @@
 // See the LICENSE file in the project root for more information.
 
 using System.Collections.Generic;
+using Microsoft.ML;
+using Microsoft.ML.Calibrators;
+using Microsoft.ML.Data;
 using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.FastTree.Internal;
-using Microsoft.ML.Runtime.Internal.Calibration;
+using Microsoft.ML.Trainers.FastTree;
 
 [assembly: LoadableClass(typeof(TreeEnsembleCombiner), null, typeof(SignatureModelCombiner), "Fast Tree Model Combiner", "FastTreeCombiner")]
 
-namespace Microsoft.ML.Runtime.FastTree.Internal
+namespace Microsoft.ML.Trainers.FastTree
 {
-    public sealed class TreeEnsembleCombiner : IModelCombiner<IPredictorProducing<float>, IPredictorProducing<float>>
+    internal sealed class TreeEnsembleCombiner : IModelCombiner
     {
         private readonly IHost _host;
         private readonly PredictionKind _kind;
@@ -21,22 +23,22 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
             _host = env.Register("TreeEnsembleCombiner");
             switch (kind)
             {
-                case PredictionKind.BinaryClassification:
-                case PredictionKind.Regression:
-                case PredictionKind.Ranking:
-                    _kind = kind;
-                    break;
-                default:
-                    throw _host.ExceptUserArg(nameof(kind), $"Tree ensembles can be either of type {nameof(PredictionKind.BinaryClassification)}, " +
-                        $"{nameof(PredictionKind.Regression)} or {nameof(PredictionKind.Ranking)}");
+            case PredictionKind.BinaryClassification:
+            case PredictionKind.Regression:
+            case PredictionKind.Ranking:
+                _kind = kind;
+                break;
+            default:
+                throw _host.ExceptUserArg(nameof(kind), $"Tree ensembles can be either of type {nameof(PredictionKind.BinaryClassification)}, " +
+                    $"{nameof(PredictionKind.Regression)} or {nameof(PredictionKind.Ranking)}");
             }
         }
 
-        public IPredictorProducing<float> CombineModels(IEnumerable<IPredictorProducing<float>> models)
+        IPredictor IModelCombiner.CombineModels(IEnumerable<IPredictor> models)
         {
             _host.CheckValue(models, nameof(models));
 
-            var ensemble = new Ensemble();
+            var ensemble = new InternalTreeEnsemble();
             int modelCount = 0;
             int featureCount = -1;
             bool binaryClassifier = false;
@@ -47,16 +49,17 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
                 var predictor = model;
                 _host.CheckValue(predictor, nameof(models), "One of the models is null");
 
-                var calibrated = predictor as CalibratedPredictorBase;
+                var calibrated = predictor as IWeaklyTypedCalibratedModelParameters;
                 double paramA = 1;
                 if (calibrated != null)
-                {
-                    _host.Check(calibrated.Calibrator is PlattCalibrator,
+                    _host.Check(calibrated.WeaklyTypedCalibrator is PlattCalibrator,
                         "Combining FastTree models can only be done when the models are calibrated with Platt calibrator");
-                    predictor = calibrated.SubPredictor;
-                    paramA = -(calibrated.Calibrator as PlattCalibrator).ParamA;
-                }
-                var tree = predictor as FastTreePredictionWrapper;
+
+                predictor = calibrated.WeaklyTypedSubModel;
+                paramA = -((PlattCalibrator)calibrated.WeaklyTypedCalibrator).Slope;
+
+                var tree = predictor as TreeEnsembleModelParameters;
+
                 if (tree == null)
                     throw _host.Except("Model is not a tree ensemble");
                 foreach (var t in tree.TrainedEnsemble.Trees)
@@ -65,7 +68,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
                     int position = -1;
                     t.ToByteArray(bytes, ref position);
                     position = -1;
-                    var tNew = new RegressionTree(bytes, ref position);
+                    var tNew = new InternalRegressionTree(bytes, ref position);
                     if (paramA != 1)
                     {
                         for (int i = 0; i < tNew.NumLeaves; i++)
@@ -77,12 +80,12 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
                 if (modelCount == 1)
                 {
                     binaryClassifier = calibrated != null;
-                    featureCount = tree.InputType.ValueCount;
+                    featureCount = tree.InputType.GetValueCount();
                 }
                 else
                 {
                     _host.Check((calibrated != null) == binaryClassifier, "Ensemble contains both calibrated and uncalibrated models");
-                    _host.Check(featureCount == tree.InputType.ValueCount, "Found models with different number of features");
+                    _host.Check(featureCount == tree.InputType.GetValueCount(), "Found models with different number of features");
                 }
             }
 
@@ -96,19 +99,20 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
 
             switch (_kind)
             {
-                case PredictionKind.BinaryClassification:
-                    if (!binaryClassifier)
-                        return new FastTreeBinaryPredictor(_host, ensemble, featureCount, null);
+            case PredictionKind.BinaryClassification:
+                if (!binaryClassifier)
+                    return new FastTreeBinaryModelParameters(_host, ensemble, featureCount, null);
 
-                    var cali = new PlattCalibrator(_host, -1, 0);
-                    return new FeatureWeightsCalibratedPredictor(_host, new FastTreeBinaryPredictor(_host, ensemble, featureCount, null), cali);
-                case PredictionKind.Regression:
-                    return new FastTreeRegressionPredictor(_host, ensemble, featureCount, null);
-                case PredictionKind.Ranking:
-                    return new FastTreeRankingPredictor(_host, ensemble, featureCount, null);
-                default:
-                    _host.Assert(false);
-                    throw _host.ExceptNotSupp();
+                var cali = new PlattCalibrator(_host, -1, 0);
+                var fastTreeModel = new FastTreeBinaryModelParameters(_host, ensemble, featureCount, null);
+                return new FeatureWeightsCalibratedModelParameters<FastTreeBinaryModelParameters, PlattCalibrator>(_host, fastTreeModel, cali);
+            case PredictionKind.Regression:
+                return new FastTreeRegressionModelParameters(_host, ensemble, featureCount, null);
+            case PredictionKind.Ranking:
+                return new FastTreeRankingModelParameters(_host, ensemble, featureCount, null);
+            default:
+                _host.Assert(false);
+                throw _host.ExceptNotSupp();
             }
         }
     }

@@ -4,39 +4,38 @@
 
 using System;
 using System.Collections.Generic;
-using System.Linq;
-using Microsoft.ML.Core.Data;
-using Microsoft.ML.Runtime.Model;
+using Microsoft.ML.Runtime;
 
-namespace Microsoft.ML.Runtime.Data
+namespace Microsoft.ML.Data
 {
-    public abstract class OneToOneTransformerBase : ITransformer, ICanSaveModel
+    /// <summary>
+    /// Base class for transformer which operates on pairs input and output columns.
+    /// </summary>
+    public abstract class OneToOneTransformerBase : RowToRowTransformerBase
     {
-        protected readonly IHost Host;
-        protected readonly (string input, string output)[] ColumnPairs;
+        [BestFriend]
+        internal readonly (string outputColumnName, string inputColumnName)[] ColumnPairs;
 
-        protected OneToOneTransformerBase(IHost host, (string input, string output)[] columns)
+        [BestFriend]
+        private protected OneToOneTransformerBase(IHost host, params (string outputColumnName, string inputColumnName)[] columns) : base(host)
         {
-            Contracts.AssertValue(host);
             host.CheckValue(columns, nameof(columns));
-
             var newNames = new HashSet<string>();
             foreach (var column in columns)
             {
-                host.CheckNonEmpty(column.input, nameof(columns));
-                host.CheckNonEmpty(column.output, nameof(columns));
+                host.CheckNonEmpty(column.inputColumnName, nameof(columns));
+                host.CheckNonEmpty(column.outputColumnName, nameof(columns));
 
-                if (!newNames.Add(column.output))
-                    throw Contracts.ExceptParam(nameof(columns), $"Output column '{column.output}' specified multiple times");
+                if (!newNames.Add(column.outputColumnName))
+                    throw Contracts.ExceptParam(nameof(columns), $"Name of the result column '{column.outputColumnName}' specified multiple times");
             }
 
-            Host = host;
             ColumnPairs = columns;
         }
 
-        protected OneToOneTransformerBase(IHost host, ModelLoadContext ctx)
+        [BestFriend]
+        private protected OneToOneTransformerBase(IHost host, ModelLoadContext ctx) : base(host)
         {
-            Host = host;
             // *** Binary format ***
             // int: number of added columns
             // for each added column
@@ -44,18 +43,17 @@ namespace Microsoft.ML.Runtime.Data
             //   int: id of input column name
 
             int n = ctx.Reader.ReadInt32();
-            ColumnPairs = new (string input, string output)[n];
+            ColumnPairs = new (string outputColumnName, string inputColumnName)[n];
             for (int i = 0; i < n; i++)
             {
-                string output = ctx.LoadNonEmptyString();
-                string input = ctx.LoadNonEmptyString();
-                ColumnPairs[i] = (input, output);
+                string outputColumnName = ctx.LoadNonEmptyString();
+                string inputColumnName = ctx.LoadNonEmptyString();
+                ColumnPairs[i] = (outputColumnName, inputColumnName);
             }
         }
 
-        public abstract void Save(ModelSaveContext ctx);
-
-        protected void SaveColumns(ModelSaveContext ctx)
+        [BestFriend]
+        private protected void SaveColumns(ModelSaveContext ctx)
         {
             Host.CheckValue(ctx, nameof(ctx));
 
@@ -68,70 +66,36 @@ namespace Microsoft.ML.Runtime.Data
             ctx.Writer.Write(ColumnPairs.Length);
             for (int i = 0; i < ColumnPairs.Length; i++)
             {
-                ctx.SaveNonEmptyString(ColumnPairs[i].output);
-                ctx.SaveNonEmptyString(ColumnPairs[i].input);
+                ctx.SaveNonEmptyString(ColumnPairs[i].outputColumnName);
+                ctx.SaveNonEmptyString(ColumnPairs[i].inputColumnName);
             }
         }
 
-        private void CheckInput(ISchema inputSchema, int col, out int srcCol)
+        private void CheckInput(DataViewSchema inputSchema, int col, out int srcCol)
         {
             Contracts.AssertValue(inputSchema);
             Contracts.Assert(0 <= col && col < ColumnPairs.Length);
 
-            if (!inputSchema.TryGetColumnIndex(ColumnPairs[col].input, out srcCol))
-                throw Host.ExceptSchemaMismatch(nameof(inputSchema), "input", ColumnPairs[col].input);
+            if (!inputSchema.TryGetColumnIndex(ColumnPairs[col].inputColumnName, out srcCol))
+                throw Host.ExceptSchemaMismatch(nameof(inputSchema), "input", ColumnPairs[col].inputColumnName);
             CheckInputColumn(inputSchema, col, srcCol);
         }
 
-        protected virtual void CheckInputColumn(ISchema inputSchema, int col, int srcCol)
+        [BestFriend]
+        private protected virtual void CheckInputColumn(DataViewSchema inputSchema, int col, int srcCol)
         {
             // By default, there are no extra checks.
         }
 
-        public bool IsRowToRowMapper => true;
-
-        public IRowToRowMapper GetRowToRowMapper(ISchema inputSchema)
+        [BestFriend]
+        private protected abstract class OneToOneMapperBase : MapperBase
         {
-            Host.CheckValue(inputSchema, nameof(inputSchema));
-            var simplerMapper = MakeRowMapper(inputSchema);
-            return new RowToRowMapperTransform(Host, new EmptyDataView(Host, inputSchema), simplerMapper);
-        }
-
-        protected abstract IRowMapper MakeRowMapper(ISchema schema);
-
-        public ISchema GetOutputSchema(ISchema inputSchema)
-        {
-            Host.CheckValue(inputSchema, nameof(inputSchema));
-
-            // Check that all the input columns are present and correct.
-            for (int i = 0; i < ColumnPairs.Length; i++)
-                CheckInput(inputSchema, i, out int col);
-
-            return Transform(new EmptyDataView(Host, inputSchema)).Schema;
-        }
-
-        public IDataView Transform(IDataView input) => MakeDataTransform(input);
-
-        protected RowToRowMapperTransform MakeDataTransform(IDataView input)
-        {
-            Host.CheckValue(input, nameof(input));
-            return new RowToRowMapperTransform(Host, input, MakeRowMapper(input.Schema));
-        }
-
-        protected abstract class MapperBase : IRowMapper
-        {
-            protected readonly IHost Host;
             protected readonly Dictionary<int, int> ColMapNewToOld;
-            protected readonly ISchema InputSchema;
             private readonly OneToOneTransformerBase _parent;
 
-            protected MapperBase(IHost host, OneToOneTransformerBase parent, ISchema inputSchema)
+            protected OneToOneMapperBase(IHost host, OneToOneTransformerBase parent, DataViewSchema inputSchema) : base(host, inputSchema, parent)
             {
-                Contracts.AssertValue(host);
                 Contracts.AssertValue(parent);
-                Contracts.AssertValue(inputSchema);
-
-                Host = host;
                 _parent = parent;
 
                 ColMapNewToOld = new Dictionary<int, int>();
@@ -140,47 +104,18 @@ namespace Microsoft.ML.Runtime.Data
                     _parent.CheckInput(inputSchema, i, out int srcCol);
                     ColMapNewToOld.Add(i, srcCol);
                 }
-                InputSchema = inputSchema;
             }
-            public Func<int, bool> GetDependencies(Func<int, bool> activeOutput)
+
+            private protected override Func<int, bool> GetDependenciesCore(Func<int, bool> activeOutput)
             {
-                var active = new bool[InputSchema.ColumnCount];
+                var active = new bool[InputSchema.Count];
                 foreach (var pair in ColMapNewToOld)
                     if (activeOutput(pair.Key))
                         active[pair.Value] = true;
                 return col => active[col];
             }
 
-            public abstract RowMapperColumnInfo[] GetOutputColumns();
-
-            public void Save(ModelSaveContext ctx) => _parent.Save(ctx);
-
-            public Delegate[] CreateGetters(IRow input, Func<int, bool> activeOutput, out Action disposer)
-            {
-                Contracts.Assert(input.Schema == InputSchema);
-                var result = new Delegate[_parent.ColumnPairs.Length];
-                var disposers = new Action[_parent.ColumnPairs.Length];
-                for (int i = 0; i < _parent.ColumnPairs.Length; i++)
-                {
-                    if (!activeOutput(i))
-                        continue;
-                    int srcCol = ColMapNewToOld[i];
-                    result[i] = MakeGetter(input, i, out disposers[i]);
-                }
-                if (disposers.Any(x => x != null))
-                {
-                    disposer = () =>
-                    {
-                        foreach (var act in disposers)
-                            act();
-                    };
-                }
-                else
-                    disposer = null;
-                return result;
-            }
-
-            protected abstract Delegate MakeGetter(IRow input, int iinfo, out Action disposer);
+            private protected override void SaveModel(ModelSaveContext ctx) => _parent.SaveModel(ctx);
         }
     }
 }

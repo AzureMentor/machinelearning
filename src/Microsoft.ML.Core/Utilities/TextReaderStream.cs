@@ -5,8 +5,9 @@
 using System;
 using System.IO;
 using System.Text;
+using Microsoft.ML.Runtime;
 
-namespace Microsoft.ML.Runtime.Internal.Utilities
+namespace Microsoft.ML.Internal.Utilities
 {
     /// <summary>
     /// A readable <see cref="Stream"/> that is backed by a <see cref="TextReader"/>.
@@ -14,7 +15,8 @@ namespace Microsoft.ML.Runtime.Internal.Utilities
     /// compensates by inserting <c>\n</c> line feed characters at the end of every
     /// input line, including the last one.
     /// </summary>
-    public sealed class TextReaderStream : Stream
+    [BestFriend]
+    internal sealed class TextReaderStream : Stream
     {
         private readonly TextReader _baseReader;
         private readonly Encoding _encoding;

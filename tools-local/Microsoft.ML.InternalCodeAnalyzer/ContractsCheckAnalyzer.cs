@@ -95,7 +95,7 @@ namespace Microsoft.ML.InternalCodeAnalyzer
         /// Returns an array parallel to <paramref name="parameters"/> that contains
         /// the arguments in <paramref name="invocation"/>. If named parameters are used
         /// then this is not necessarily the same. Note that in the event that there are
-        /// more arguments than parameters (e.g., via a <c>params</c> variable length
+        /// more arguments than parameters (for example, via a <c>params</c> variable length
         /// parameter) only the first match for the parameter is recorded.
         /// </summary>
         private static ArgumentSyntax[] ParallelArgs(
@@ -196,8 +196,11 @@ namespace Microsoft.ML.InternalCodeAnalyzer
             var containingSymbolName = methodSymbol.ContainingSymbol.ToString();
             // The "internal" version is one used by some projects that want to benefit from Contracts,
             // but for some reason cannot reference MLCore.
+            // Contract functions defined Microsoft.ML.Internal.CpuMath.Core are introduced for breaking the dependencies
+            // from CpuMath project to Microsoft.ML.Core.
             if (containingSymbolName != "Microsoft.ML.Runtime.Contracts" &&
-                containingSymbolName != "Microsoft.ML.Runtime.Internal.Contracts")
+                containingSymbolName != "Microsoft.ML.Internal.CpuMath.Core.Contracts" &&
+                containingSymbolName != "Microsoft.ML.Internal.DataView.Contracts")
             {
                 return;
             }

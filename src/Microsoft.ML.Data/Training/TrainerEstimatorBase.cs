@@ -2,27 +2,27 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using System.Collections.Generic;
 using System.Linq;
-using Microsoft.ML.Core.Data;
-using Microsoft.ML.Runtime.Data;
+using Microsoft.ML.Data;
+using Microsoft.ML.Runtime;
 
-namespace Microsoft.ML.Runtime.Training
+namespace Microsoft.ML.Trainers
 {
     /// <summary>
     /// This represents a basic class for 'simple trainer'.
     /// A 'simple trainer' accepts one feature column and one label column, also optionally a weight column.
     /// It produces a 'prediction transformer'.
     /// </summary>
-    public abstract class TrainerEstimatorBase<TTransformer, TModel> : ITrainerEstimator<TTransformer, TModel>, ITrainer<TModel>
+    public abstract class TrainerEstimatorBase<TTransformer, TModel> : ITrainerEstimator<TTransformer, TModel>, ITrainer<IPredictor>
         where TTransformer : ISingleFeaturePredictionTransformer<TModel>
-        where TModel : IPredictor
+        where TModel : class
     {
         /// <summary>
         /// A standard string to use in errors or warnings by subclasses, to communicate the idea that no valid
         /// instances were able to be found.
         /// </summary>
-        protected const string NoTrainingInstancesMessage = "No valid training instances found, all instances have missing features.";
+        [BestFriend]
+        private protected const string NoTrainingInstancesMessage = "No valid training instances found, all instances have missing features.";
 
         /// <summary>
         /// The feature column that the trainer expects.
@@ -41,28 +41,39 @@ namespace Microsoft.ML.Runtime.Training
         /// </summary>
         public readonly SchemaShape.Column WeightColumn;
 
-        protected readonly IHost Host;
+        [BestFriend]
+        private protected readonly IHost Host;
 
         /// <summary>
         /// The information about the trainer: whether it benefits from normalization, caching etc.
         /// </summary>
         public abstract TrainerInfo Info { get; }
 
-        public abstract PredictionKind PredictionKind { get; }
+        PredictionKind ITrainer.PredictionKind => PredictionKind;
 
-        public TrainerEstimatorBase(IHost host, SchemaShape.Column feature, SchemaShape.Column label, SchemaShape.Column weight = null)
+        [BestFriend]
+        private protected abstract PredictionKind PredictionKind { get; }
+
+        [BestFriend]
+        private protected TrainerEstimatorBase(IHost host,
+            SchemaShape.Column feature,
+            SchemaShape.Column label,
+            SchemaShape.Column weight = default)
         {
             Contracts.CheckValue(host, nameof(host));
             Host = host;
-            Host.CheckValue(feature, nameof(feature));
-            Host.CheckValueOrNull(label);
-            Host.CheckValueOrNull(weight);
+            Host.CheckParam(feature.IsValid, nameof(feature), "not initialized properly");
 
             FeatureColumn = feature;
             LabelColumn = label;
             WeightColumn = weight;
         }
 
+        /// <summary> Trains and returns a <see cref="ITransformer"/>.</summary>
+        /// <remarks>
+        /// Derived class can overload this function.
+        /// For example, it could take an additional dataset to train with a separate validation set.
+        /// </remarks>
         public TTransformer Fit(IDataView input) => TrainTransformer(input);
 
         public SchemaShape GetOutputSchema(SchemaShape inputSchema)
@@ -71,7 +82,7 @@ namespace Microsoft.ML.Runtime.Training
 
             CheckInputSchema(inputSchema);
 
-            var outColumns = inputSchema.Columns.ToDictionary(x => x.Name);
+            var outColumns = inputSchema.ToDictionary(x => x.Name);
             foreach (var col in GetOutputColumnsCore(inputSchema))
                 outColumns[col.Name] = col;
 
@@ -81,77 +92,110 @@ namespace Microsoft.ML.Runtime.Training
         /// <summary>
         /// The columns that will be created by the fitted transformer.
         /// </summary>
-        protected abstract SchemaShape.Column[] GetOutputColumnsCore(SchemaShape inputSchema);
+        private protected abstract SchemaShape.Column[] GetOutputColumnsCore(SchemaShape inputSchema);
 
-        public TModel Train(TrainContext context)
+        IPredictor ITrainer<IPredictor>.Train(TrainContext context)
         {
             Host.CheckValue(context, nameof(context));
-            return TrainModelCore(context);
+            var pred = TrainModelCore(context) as IPredictor;
+            Host.Check(pred != null, "Training did not return a predictor.");
+            return pred;
         }
 
         private void CheckInputSchema(SchemaShape inputSchema)
         {
             // Verify that all required input columns are present, and are of the same type.
             if (!inputSchema.TryFindColumn(FeatureColumn.Name, out var featureCol))
-                throw Host.Except($"Feature column '{FeatureColumn.Name}' is not found");
+                throw Host.ExceptSchemaMismatch(nameof(inputSchema), "feature", FeatureColumn.Name);
             if (!FeatureColumn.IsCompatibleWith(featureCol))
-                throw Host.Except($"Feature column '{FeatureColumn.Name}' is not compatible");
+                throw Host.ExceptSchemaMismatch(nameof(inputSchema), "feature", FeatureColumn.Name,
+                    FeatureColumn.GetTypeString(), featureCol.GetTypeString());
 
-            if (WeightColumn != null)
+            if (WeightColumn.IsValid)
             {
                 if (!inputSchema.TryFindColumn(WeightColumn.Name, out var weightCol))
-                    throw Host.Except($"Weight column '{WeightColumn.Name}' is not found");
+                    throw Host.ExceptSchemaMismatch(nameof(inputSchema), "weight", WeightColumn.Name);
                 if (!WeightColumn.IsCompatibleWith(weightCol))
-                    throw Host.Except($"Weight column '{WeightColumn.Name}' is not compatible");
+                    throw Host.ExceptSchemaMismatch(nameof(inputSchema), "weight", WeightColumn.Name,
+                        WeightColumn.GetTypeString(), weightCol.GetTypeString());
             }
 
             // Special treatment for label column: we allow different types of labels, so the trainers
             // may define their own requirements on the label column.
-            if (LabelColumn != null)
+            if (LabelColumn.IsValid)
             {
                 if (!inputSchema.TryFindColumn(LabelColumn.Name, out var labelCol))
-                    throw Host.Except($"Label column '{LabelColumn.Name}' is not found");
+                    throw Host.ExceptSchemaMismatch(nameof(inputSchema), "label", LabelColumn.Name);
                 CheckLabelCompatible(labelCol);
             }
         }
 
-        protected virtual void CheckLabelCompatible(SchemaShape.Column labelCol)
+        private protected virtual void CheckLabelCompatible(SchemaShape.Column labelCol)
         {
-            Contracts.CheckValue(labelCol, nameof(labelCol));
-            Contracts.AssertValue(LabelColumn);
+            Contracts.CheckParam(labelCol.IsValid, nameof(labelCol), "not initialized properly");
+            Host.Assert(LabelColumn.IsValid);
 
             if (!LabelColumn.IsCompatibleWith(labelCol))
-                throw Host.Except($"Label column '{LabelColumn.Name}' is not compatible");
+                throw Host.ExceptSchemaMismatch(nameof(labelCol), "label", WeightColumn.Name,
+                    LabelColumn.GetTypeString(), labelCol.GetTypeString());
         }
 
-        protected TTransformer TrainTransformer(IDataView trainSet,
+        [BestFriend]
+        private protected TTransformer TrainTransformer(IDataView trainSet,
             IDataView validationSet = null, IPredictor initPredictor = null)
         {
-            var cachedTrain = Info.WantCaching ? new CacheDataView(Host, trainSet, prefetch: null) : trainSet;
+            CheckInputSchema(SchemaShape.Create(trainSet.Schema));
+            var trainRoleMapped = MakeRoles(trainSet);
+            RoleMappedData validRoleMapped = null;
 
-            var trainRoles = MakeRoles(cachedTrain);
-
-            RoleMappedData validRoles;
-
-            if (validationSet == null)
-                validRoles = null;
-            else
+            if (validationSet != null)
             {
-                var cachedValid = Info.WantCaching ? new CacheDataView(Host, validationSet, prefetch: null) : validationSet;
-                validRoles = MakeRoles(cachedValid);
+                CheckInputSchema(SchemaShape.Create(validationSet.Schema));
+                validRoleMapped = MakeRoles(validationSet);
             }
 
-            var pred = TrainModelCore(new TrainContext(trainRoles, validRoles, initPredictor));
+            var pred = TrainModelCore(new TrainContext(trainRoleMapped, validRoleMapped, null, initPredictor));
             return MakeTransformer(pred, trainSet.Schema);
         }
 
-        protected abstract TModel TrainModelCore(TrainContext trainContext);
+        private protected abstract TModel TrainModelCore(TrainContext trainContext);
 
-        protected abstract TTransformer MakeTransformer(TModel model, ISchema trainSchema);
+        private protected abstract TTransformer MakeTransformer(TModel model, DataViewSchema trainSchema);
 
-        private RoleMappedData MakeRoles(IDataView data) =>
-            new RoleMappedData(data, label: LabelColumn?.Name, feature: FeatureColumn.Name, weight: WeightColumn?.Name);
+        private protected virtual RoleMappedData MakeRoles(IDataView data) =>
+            new RoleMappedData(data, label: LabelColumn.Name, feature: FeatureColumn.Name, weight: WeightColumn.Name);
 
-        IPredictor ITrainer.Train(TrainContext context) => Train(context);
+        IPredictor ITrainer.Train(TrainContext context) => ((ITrainer<IPredictor>)this).Train(context);
+    }
+
+    /// <summary>
+    /// This represents a basic class for 'simple trainer'.
+    /// A 'simple trainer' accepts one feature column and one label column, also optionally a weight column.
+    /// It produces a 'prediction transformer'.
+    /// </summary>
+    public abstract class TrainerEstimatorBaseWithGroupId<TTransformer, TModel> : TrainerEstimatorBase<TTransformer, TModel>
+        where TTransformer : ISingleFeaturePredictionTransformer<TModel>
+        where TModel : class
+
+    {
+        /// <summary>
+        /// The optional groupID column that the ranking trainers expects.
+        /// </summary>
+        public readonly SchemaShape.Column GroupIdColumn;
+
+        [BestFriend]
+        private protected TrainerEstimatorBaseWithGroupId(IHost host,
+                SchemaShape.Column feature,
+                SchemaShape.Column label,
+                SchemaShape.Column weight = default,
+                SchemaShape.Column groupId = default)
+            : base(host, feature, label, weight)
+        {
+            GroupIdColumn = groupId;
+        }
+
+        private protected override RoleMappedData MakeRoles(IDataView data) =>
+            new RoleMappedData(data, label: LabelColumn.Name, feature: FeatureColumn.Name, group: GroupIdColumn.Name, weight: WeightColumn.Name);
+
     }
 }

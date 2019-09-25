@@ -2,21 +2,20 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Float = System.Single;
-
 using System;
-using System.Linq;
 using System.Collections.Generic;
-using Microsoft.ML.Runtime.Internal.Utilities;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Runtime;
 
-namespace Microsoft.ML.Runtime.Data
+namespace Microsoft.ML.Data
 {
     using BitArray = System.Collections.BitArray;
 
     /// <summary>
     /// This is a class for composing an in memory IDataView.
     /// </summary>
-    public sealed class ArrayDataViewBuilder
+    [BestFriend]
+    internal sealed class ArrayDataViewBuilder
     {
         private readonly IHost _host;
         private readonly List<Column> _columns;
@@ -65,7 +64,7 @@ namespace Microsoft.ML.Runtime.Data
         /// a scalar, string, or <c>ReadOnlyMemory</c> would be perfectly acceptable, but a
         /// <c>HashSet</c> or <c>VBuffer</c> would not be).
         /// </summary>
-        public void AddColumn<T>(string name, PrimitiveType type, params T[] values)
+        public void AddColumn<T>(string name, PrimitiveDataViewType type, params T[] values)
         {
             _host.CheckParam(type != null && type.RawType == typeof(T), nameof(type));
             CheckLength(name, values);
@@ -77,12 +76,17 @@ namespace Microsoft.ML.Runtime.Data
         /// Constructs a new key column from an array where values are copied to output simply
         /// by being assigned.
         /// </summary>
-        public void AddColumn(string name, ValueGetter<VBuffer<ReadOnlyMemory<char>>> getKeyValues, ulong keyMin, int keyCount, params uint[] values)
+        /// <param name="name">The name of the column.</param>
+        /// <param name="getKeyValues">The delegate that does a reverse lookup based upon the given key. This is for annotation creation</param>
+        /// <param name="keyCount">The count of unique keys specified in values</param>
+        /// <param name="values">The values to add to the column. Note that since this is creating a <see cref="KeyDataViewType"/> column, the values will be offset by 1.</param>
+        public void AddColumn<T1>(string name, ValueGetter<VBuffer<ReadOnlyMemory<char>>> getKeyValues, ulong keyCount, params T1[] values)
         {
             _host.CheckValue(getKeyValues, nameof(getKeyValues));
             _host.CheckParam(keyCount > 0, nameof(keyCount));
             CheckLength(name, values);
-            _columns.Add(new AssignmentColumn<uint>(new KeyType(DataKind.U4, keyMin, keyCount), values));
+            values.GetType().GetElementType().TryGetDataKind(out InternalDataKind kind);
+            _columns.Add(new AssignmentColumn<T1>(new KeyDataViewType(kind.ToType(), keyCount), values));
             _getKeyValues.Add(name, getKeyValues);
             _names.Add(name);
         }
@@ -90,7 +94,7 @@ namespace Microsoft.ML.Runtime.Data
         /// <summary>
         /// Creates a column with slot names from arrays. The added column will be re-interpreted as a buffer.
         /// </summary>
-        public void AddColumn<T>(string name, ValueGetter<VBuffer<ReadOnlyMemory<char>>> getNames, PrimitiveType itemType, params T[][] values)
+        public void AddColumn<T>(string name, ValueGetter<VBuffer<ReadOnlyMemory<char>>> getNames, PrimitiveDataViewType itemType, params T[][] values)
         {
             _host.CheckValue(getNames, nameof(getNames));
             _host.CheckParam(itemType != null && itemType.RawType == typeof(T), nameof(itemType));
@@ -104,7 +108,7 @@ namespace Microsoft.ML.Runtime.Data
         /// <summary>
         /// Creates a column from arrays. The added column will be re-interpreted as a buffer.
         /// </summary>
-        public void AddColumn<T>(string name, PrimitiveType itemType, params T[][] values)
+        public void AddColumn<T>(string name, PrimitiveDataViewType itemType, params T[][] values)
         {
             _host.CheckParam(itemType != null && itemType.RawType == typeof(T), nameof(itemType));
             CheckLength(name, values);
@@ -115,7 +119,7 @@ namespace Microsoft.ML.Runtime.Data
         /// <summary>
         /// Creates a column with slot names from arrays. The added column will be re-interpreted as a buffer and possibly sparsified.
         /// </summary>
-        public void AddColumn<T>(string name, ValueGetter<VBuffer<ReadOnlyMemory<char>>> getNames, PrimitiveType itemType, Combiner<T> combiner, params T[][] values)
+        public void AddColumn<T>(string name, ValueGetter<VBuffer<ReadOnlyMemory<char>>> getNames, PrimitiveDataViewType itemType, Combiner<T> combiner, params T[][] values)
         {
             _host.CheckValue(getNames, nameof(getNames));
             _host.CheckParam(itemType != null && itemType.RawType == typeof(T), nameof(itemType));
@@ -129,7 +133,7 @@ namespace Microsoft.ML.Runtime.Data
         /// <summary>
         /// Creates a column from arrays. The added column will be re-interpreted as a buffer and possibly sparsified.
         /// </summary>
-        public void AddColumn<T>(string name, PrimitiveType itemType, Combiner<T> combiner, params T[][] values)
+        public void AddColumn<T>(string name, PrimitiveDataViewType itemType, Combiner<T> combiner, params T[][] values)
         {
             _host.CheckParam(itemType != null && itemType.RawType == typeof(T), nameof(itemType));
             CheckLength(name, values);
@@ -140,7 +144,7 @@ namespace Microsoft.ML.Runtime.Data
         /// <summary>
         /// Adds a VBuffer{T} valued column.
         /// </summary>
-        public void AddColumn<T>(string name, PrimitiveType itemType, params VBuffer<T>[] values)
+        public void AddColumn<T>(string name, PrimitiveDataViewType itemType, params VBuffer<T>[] values)
         {
             _host.CheckParam(itemType != null && itemType.RawType == typeof(T), nameof(itemType));
             CheckLength(name, values);
@@ -151,7 +155,7 @@ namespace Microsoft.ML.Runtime.Data
         /// <summary>
         /// Adds a VBuffer{T} valued column.
         /// </summary>
-        public void AddColumn<T>(string name, ValueGetter<VBuffer<ReadOnlyMemory<char>>> getNames, PrimitiveType itemType, params VBuffer<T>[] values)
+        public void AddColumn<T>(string name, ValueGetter<VBuffer<ReadOnlyMemory<char>>> getNames, PrimitiveDataViewType itemType, params VBuffer<T>[] values)
         {
             _host.CheckValue(getNames, nameof(getNames));
             _host.CheckParam(itemType != null && itemType.RawType == typeof(T), nameof(itemType));
@@ -190,116 +194,14 @@ namespace Microsoft.ML.Runtime.Data
 
         private sealed class DataView : IDataView
         {
-            private class SchemaImpl : ISchema
-            {
-                private readonly IExceptionContext _ectx;
-                private readonly ColumnType[] _columnTypes;
-                private readonly string[] _names;
-                private readonly Dictionary<string, int> _name2col;
-                private readonly Dictionary<string, ValueGetter<VBuffer<ReadOnlyMemory<char>>>> _getSlotNamesDict;
-                private readonly Dictionary<string, ValueGetter<VBuffer<ReadOnlyMemory<char>>>> _getKeyValuesDict;
-
-                public SchemaImpl(IExceptionContext ectx, ColumnType[] columnTypes, string[] names, ArrayDataViewBuilder builder)
-                {
-                    Contracts.AssertValue(ectx);
-                    _ectx = ectx;
-                    _ectx.AssertValue(columnTypes);
-                    _ectx.AssertValue(names);
-                    _ectx.Assert(columnTypes.Length == names.Length);
-
-                    _columnTypes = columnTypes;
-                    _names = names;
-                    _name2col = new Dictionary<string, int>();
-                    for (int i = 0; i < _names.Length; ++i)
-                        _name2col[_names[i]] = i;
-
-                    _getSlotNamesDict = builder._getSlotNames;
-                    _getKeyValuesDict = builder._getKeyValues;
-                }
-
-                public int ColumnCount { get { return _columnTypes.Length; } }
-
-                public string GetColumnName(int col)
-                {
-                    _ectx.CheckParam(0 <= col & col < ColumnCount, nameof(col));
-                    return _names[col];
-                }
-
-                public ColumnType GetColumnType(int col)
-                {
-                    _ectx.CheckParam(0 <= col & col < ColumnCount, nameof(col));
-                    return _columnTypes[col];
-                }
-
-                public bool TryGetColumnIndex(string name, out int col)
-                {
-                    _ectx.CheckValueOrNull(name);
-                    if (name == null)
-                    {
-                        col = default(int);
-                        return false;
-                    }
-                    return _name2col.TryGetValue(name, out col);
-                }
-
-                public IEnumerable<KeyValuePair<string, ColumnType>> GetMetadataTypes(int col)
-                {
-                    _ectx.CheckParam(0 <= col && col < ColumnCount, nameof(col));
-                    if (_getSlotNamesDict.ContainsKey(_names[col]))
-                        yield return MetadataUtils.GetSlotNamesPair(_columnTypes[col].VectorSize);
-                    if (_getKeyValuesDict.ContainsKey(_names[col]))
-                        yield return MetadataUtils.GetKeyNamesPair(_columnTypes[col].VectorSize);
-                }
-
-                public ColumnType GetMetadataTypeOrNull(string kind, int col)
-                {
-                    _ectx.CheckNonEmpty(kind, nameof(kind));
-                    _ectx.CheckParam(0 <= col && col < ColumnCount, nameof(col));
-                    if (kind == MetadataUtils.Kinds.SlotNames && _getSlotNamesDict.ContainsKey(_names[col]))
-                        return MetadataUtils.GetNamesType(_columnTypes[col].VectorSize);
-                    if (kind == MetadataUtils.Kinds.KeyValues && _getKeyValuesDict.ContainsKey(_names[col]))
-                        return MetadataUtils.GetNamesType(_columnTypes[col].KeyCount);
-                    return null;
-                }
-
-                public void GetMetadata<TValue>(string kind, int col, ref TValue value)
-                {
-                    _ectx.CheckNonEmpty(kind, nameof(kind));
-                    _ectx.CheckParam(0 <= col && col < ColumnCount, nameof(col));
-
-                    if (kind == MetadataUtils.Kinds.SlotNames && _getSlotNamesDict.ContainsKey(_names[col]))
-                        MetadataUtils.Marshal<VBuffer<ReadOnlyMemory<char>>, TValue>(GetSlotNames, col, ref value);
-                    else if (kind == MetadataUtils.Kinds.KeyValues && _getKeyValuesDict.ContainsKey(_names[col]))
-                        MetadataUtils.Marshal<VBuffer<ReadOnlyMemory<char>>, TValue>(GetKeyValues, col, ref value);
-                    else
-                        throw MetadataUtils.ExceptGetMetadata();
-                }
-
-                private void GetSlotNames(int col, ref VBuffer<ReadOnlyMemory<char>> dst)
-                {
-                    Contracts.Assert(_getSlotNamesDict.ContainsKey(_names[col]));
-                    ValueGetter<VBuffer<ReadOnlyMemory<char>>> get;
-                    _getSlotNamesDict.TryGetValue(_names[col], out get);
-                    get(ref dst);
-                }
-
-                private void GetKeyValues(int col, ref VBuffer<ReadOnlyMemory<char>> dst)
-                {
-                    Contracts.Assert(_getKeyValuesDict.ContainsKey(_names[col]));
-                    ValueGetter<VBuffer<ReadOnlyMemory<char>>> get;
-                    _getKeyValuesDict.TryGetValue(_names[col], out get);
-                    get(ref dst);
-                }
-            }
-
             private readonly int _rowCount;
             private readonly Column[] _columns;
-            private readonly SchemaImpl _schema;
+            private readonly DataViewSchema _schema;
             private readonly IHost _host;
 
-            public ISchema Schema { get { return _schema; } }
+            public DataViewSchema Schema { get { return _schema; } }
 
-            public long? GetRowCount(bool lazy = true) { return _rowCount; }
+            public long? GetRowCount() { return _rowCount; }
 
             public bool CanShuffle { get { return true; } }
 
@@ -312,33 +214,47 @@ namespace Microsoft.ML.Runtime.Data
                 _host.Assert(rowCount >= 0);
                 _host.Assert(builder._names.Count == builder._columns.Count);
                 _columns = builder._columns.ToArray();
-                _schema = new SchemaImpl(_host, _columns.Select(c => c.Type).ToArray(), builder._names.ToArray(), builder);
+
+                var schemaBuilder = new DataViewSchema.Builder();
+                for(int i=0; i< _columns.Length; i++)
+                {
+                    var meta = new DataViewSchema.Annotations.Builder();
+
+                    if (builder._getSlotNames.TryGetValue(builder._names[i], out var slotNamesGetter))
+                        meta.AddSlotNames(_columns[i].Type.GetVectorSize(), slotNamesGetter);
+
+                    if (builder._getKeyValues.TryGetValue(builder._names[i], out var keyValueGetter))
+                        meta.AddKeyValues(_columns[i].Type.GetKeyCountAsInt32(_host), TextDataViewType.Instance, keyValueGetter);
+                    schemaBuilder.AddColumn(builder._names[i], _columns[i].Type, meta.ToAnnotations());
+                }
+
+                _schema = schemaBuilder.ToSchema();
                 _rowCount = rowCount;
             }
 
-            public IRowCursor GetRowCursor(Func<int, bool> predicate, IRandom rand = null)
+            public DataViewRowCursor GetRowCursor(IEnumerable<DataViewSchema.Column> columnsNeeded, Random rand = null)
             {
-                _host.CheckValue(predicate, nameof(predicate));
+                var predicate = RowCursorUtils.FromColumnsToPredicate(columnsNeeded, Schema);
+
                 _host.CheckValueOrNull(rand);
-                return new RowCursor(_host, this, predicate, rand);
+                return new Cursor(_host, this, predicate, rand);
             }
 
-            public IRowCursor[] GetRowCursorSet(out IRowCursorConsolidator consolidator,
-                Func<int, bool> predicate, int n, IRandom rand = null)
+            public DataViewRowCursor[] GetRowCursorSet(IEnumerable<DataViewSchema.Column> columnsNeeded, int n, Random rand = null)
             {
-                _host.CheckValue(predicate, nameof(predicate));
+                var predicate = RowCursorUtils.FromColumnsToPredicate(columnsNeeded, Schema);
+
                 _host.CheckValueOrNull(rand);
-                consolidator = null;
-                return new IRowCursor[] { new RowCursor(_host, this, predicate, rand) };
+                return new DataViewRowCursor[] { new Cursor(_host, this, predicate, rand) };
             }
 
-            private sealed class RowCursor : RootCursorBase, IRowCursor
+            private sealed class Cursor : RootCursorBase
             {
                 private readonly DataView _view;
                 private readonly BitArray _active;
                 private readonly int[] _indices;
 
-                public ISchema Schema { get { return _view.Schema; } }
+                public override DataViewSchema Schema => _view.Schema;
 
                 public override long Batch
                 {
@@ -346,82 +262,85 @@ namespace Microsoft.ML.Runtime.Data
                     get { return 0; }
                 }
 
-                public RowCursor(IChannelProvider provider, DataView view, Func<int, bool> predicate, IRandom rand)
+                public Cursor(IChannelProvider provider, DataView view, Func<int, bool> predicate, Random rand)
                     : base(provider)
                 {
                     Ch.AssertValue(view);
                     Ch.AssertValueOrNull(rand);
-                    Ch.Assert(view.Schema.ColumnCount >= 0);
+                    Ch.Assert(view.Schema.Count >= 0);
 
                     _view = view;
-                    _active = new BitArray(view.Schema.ColumnCount);
+                    _active = new BitArray(view.Schema.Count);
                     if (predicate == null)
                         _active.SetAll(true);
                     else
                     {
-                        for (int i = 0; i < view.Schema.ColumnCount; ++i)
+                        for (int i = 0; i < view.Schema.Count; ++i)
                             _active[i] = predicate(i);
                     }
                     if (rand != null)
                         _indices = Utils.GetRandomPermutation(rand, view._rowCount);
                 }
 
-                public override ValueGetter<UInt128> GetIdGetter()
+                public override ValueGetter<DataViewRowId> GetIdGetter()
                 {
                     if (_indices == null)
                     {
                         return
-                            (ref UInt128 val) =>
+                            (ref DataViewRowId val) =>
                             {
-                                Ch.Check(IsGood, "Cannot call ID getter in current state");
-                                val = new UInt128((ulong)Position, 0);
+                                Ch.Check(IsGood, RowCursorUtils.FetchValueStateError);
+                                val = new DataViewRowId((ulong)Position, 0);
                             };
                     }
                     else
                     {
                         return
-                            (ref UInt128 val) =>
+                            (ref DataViewRowId val) =>
                             {
-                                Ch.Check(IsGood, "Cannot call ID getter in current state");
-                                val = new UInt128((ulong)MappedIndex(), 0);
+                                Ch.Check(IsGood, RowCursorUtils.FetchValueStateError);
+                                val = new DataViewRowId((ulong)MappedIndex(), 0);
                             };
                     }
                 }
 
-                public bool IsColumnActive(int col)
+                /// <summary>
+                /// Returns whether the given column is active in this row.
+                /// </summary>
+                public override bool IsColumnActive(DataViewSchema.Column column)
                 {
-                    Ch.Check(0 <= col & col < Schema.ColumnCount);
-                    return _active[col];
+                    Ch.Check(column.Index < Schema.Count);
+                    return _active[column.Index];
                 }
 
-                public ValueGetter<TValue> GetGetter<TValue>(int col)
+                /// <summary>
+                /// Returns a value getter delegate to fetch the value of column with the given columnIndex, from the row.
+                /// This throws if the column is not active in this row, or if the type
+                /// <typeparamref name="TValue"/> differs from this column's type.
+                /// </summary>
+                /// <typeparam name="TValue"> is the column's content type.</typeparam>
+                /// <param name="column"> is the output column whose getter should be returned.</param>
+                public override ValueGetter<TValue> GetGetter<TValue>(DataViewSchema.Column column)
                 {
-                    Ch.Check(0 <= col & col < Schema.ColumnCount);
-                    Ch.Check(_active[col], "column is not active");
-                    var column = _view._columns[col] as Column<TValue>;
-                    if (column == null)
+                    Ch.Check(column.Index < Schema.Count);
+                    Ch.Check(column.Index < _active.Length && _active[column.Index], "the requested column is not active");
+
+                    var columnValue = _view._columns[column.Index] as Column<TValue>;
+                    if (columnValue == null)
                         throw Ch.Except("Invalid TValue: '{0}'", typeof(TValue));
 
                     return
                         (ref TValue value) =>
                         {
-                            Ch.Check(IsGood);
-                            column.CopyOut(MappedIndex(), ref value);
+                            Ch.Check(IsGood, RowCursorUtils.FetchValueStateError);
+                            columnValue.CopyOut(MappedIndex(), ref value);
                         };
                 }
 
                 protected override bool MoveNextCore()
                 {
-                    Ch.Assert(State != CursorState.Done);
                     Ch.Assert(Position < _view._rowCount);
                     return 1 < _view._rowCount - Position;
-                }
-
-                protected override bool MoveManyCore(long count)
-                {
-                    Ch.Assert(State != CursorState.Done);
-                    Ch.Assert(Position < _view._rowCount);
-                    return count < _view._rowCount - Position;
                 }
 
                 private int MappedIndex()
@@ -439,11 +358,11 @@ namespace Microsoft.ML.Runtime.Data
 
         private abstract class Column
         {
-            public readonly ColumnType Type;
+            public readonly DataViewType Type;
 
             public abstract int Length { get; }
 
-            public Column(ColumnType type)
+            public Column(DataViewType type)
             {
                 Type = type;
             }
@@ -456,7 +375,7 @@ namespace Microsoft.ML.Runtime.Data
             /// </summary>
             public abstract void CopyOut(int index, ref TOut value);
 
-            public Column(ColumnType type)
+            public Column(DataViewType type)
                 : base(type)
             {
                 Contracts.Assert(typeof(TOut) == type.RawType);
@@ -469,7 +388,7 @@ namespace Microsoft.ML.Runtime.Data
 
             public override int Length { get { return _values.Length; } }
 
-            public Column(ColumnType type, TIn[] values)
+            public Column(DataViewType type, TIn[] values)
                 : base(type)
             {
                 Contracts.AssertValue(values);
@@ -481,7 +400,7 @@ namespace Microsoft.ML.Runtime.Data
             /// compromising this object's ownership of <c>src</c>. What that operation will be
             /// will depend on the types.
             /// </summary>
-            protected abstract void CopyOut(ref TIn src, ref TOut dst);
+            protected abstract void CopyOut(in TIn src, ref TOut dst);
 
             /// <summary>
             /// Produce the output value given the index. This overload utilizes the <c>CopyOut</c>
@@ -490,7 +409,7 @@ namespace Microsoft.ML.Runtime.Data
             public override void CopyOut(int index, ref TOut value)
             {
                 Contracts.Assert(0 <= index & index < _values.Length);
-                CopyOut(ref _values[index], ref value);
+                CopyOut(in _values[index], ref value);
             }
         }
 
@@ -500,12 +419,12 @@ namespace Microsoft.ML.Runtime.Data
         /// </summary>
         private sealed class AssignmentColumn<T> : Column<T, T>
         {
-            public AssignmentColumn(PrimitiveType type, T[] values)
+            public AssignmentColumn(PrimitiveDataViewType type, T[] values)
                 : base(type, values)
             {
             }
 
-            protected override void CopyOut(ref T src, ref T dst)
+            protected override void CopyOut(in T src, ref T dst)
             {
                 dst = src;
             }
@@ -517,11 +436,11 @@ namespace Microsoft.ML.Runtime.Data
         private sealed class StringToTextColumn : Column<string, ReadOnlyMemory<char>>
         {
             public StringToTextColumn(string[] values)
-                : base(TextType.Instance, values)
+                : base(TextDataViewType.Instance, values)
             {
             }
 
-            protected override void CopyOut(ref string src, ref ReadOnlyMemory<char> dst)
+            protected override void CopyOut(in string src, ref ReadOnlyMemory<char> dst)
             {
                 dst = src.AsMemory();
             }
@@ -529,7 +448,7 @@ namespace Microsoft.ML.Runtime.Data
 
         private abstract class VectorColumn<TIn, TOut> : Column<TIn, VBuffer<TOut>>
         {
-            public VectorColumn(PrimitiveType itemType, TIn[] values, Func<TIn, int> lengthFunc)
+            public VectorColumn(PrimitiveDataViewType itemType, TIn[] values, Func<TIn, int> lengthFunc)
                 : base(InferType(itemType, values, lengthFunc), values)
             {
             }
@@ -538,7 +457,7 @@ namespace Microsoft.ML.Runtime.Data
             /// A utility function for subclasses that want to get the type with a dimension based
             /// on the input value array and some length function over the input type.
             /// </summary>
-            private static ColumnType InferType(PrimitiveType itemType, TIn[] values, Func<TIn, int> lengthFunc)
+            private static DataViewType InferType(PrimitiveDataViewType itemType, TIn[] values, Func<TIn, int> lengthFunc)
             {
                 Contracts.AssertValue(itemType);
                 Contracts.Assert(itemType.RawType == typeof(TOut));
@@ -556,7 +475,7 @@ namespace Microsoft.ML.Runtime.Data
                         }
                     }
                 }
-                return new VectorType(itemType, degree);
+                return new VectorDataViewType(itemType, degree);
             }
         }
 
@@ -565,12 +484,12 @@ namespace Microsoft.ML.Runtime.Data
         /// </summary>
         private sealed class VBufferColumn<T> : VectorColumn<VBuffer<T>, T>
         {
-            public VBufferColumn(PrimitiveType itemType, VBuffer<T>[] values)
+            public VBufferColumn(PrimitiveDataViewType itemType, VBuffer<T>[] values)
                 : base(itemType, values, v => v.Length)
             {
             }
 
-            protected override void CopyOut(ref VBuffer<T> src, ref VBuffer<T> dst)
+            protected override void CopyOut(in VBuffer<T> src, ref VBuffer<T> dst)
             {
                 src.CopyTo(ref dst);
             }
@@ -578,12 +497,12 @@ namespace Microsoft.ML.Runtime.Data
 
         private sealed class ArrayToVBufferColumn<T> : VectorColumn<T[], T>
         {
-            public ArrayToVBufferColumn(PrimitiveType itemType, T[][] values)
+            public ArrayToVBufferColumn(PrimitiveDataViewType itemType, T[][] values)
                 : base(itemType, values, Utils.Size)
             {
             }
 
-            protected override void CopyOut(ref T[] src, ref VBuffer<T> dst)
+            protected override void CopyOut(in T[] src, ref VBuffer<T> dst)
             {
                 VBuffer<T>.Copy(src, 0, ref dst, Utils.Size(src));
             }
@@ -593,13 +512,13 @@ namespace Microsoft.ML.Runtime.Data
         {
             private readonly BufferBuilder<T> _bldr;
 
-            public ArrayToSparseVBufferColumn(PrimitiveType itemType, Combiner<T> combiner, T[][] values)
+            public ArrayToSparseVBufferColumn(PrimitiveDataViewType itemType, Combiner<T> combiner, T[][] values)
                 : base(itemType, values, Utils.Size)
             {
                 _bldr = new BufferBuilder<T>(combiner);
             }
 
-            protected override void CopyOut(ref T[] src, ref VBuffer<T> dst)
+            protected override void CopyOut(in T[] src, ref VBuffer<T> dst)
             {
                 var length = Utils.Size(src);
                 _bldr.Reset(length, false);

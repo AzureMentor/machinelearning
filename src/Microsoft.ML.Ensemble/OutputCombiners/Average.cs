@@ -3,16 +3,16 @@
 // See the LICENSE file in the project root for more information.
 
 using System;
+using Microsoft.ML;
 using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.Ensemble.OutputCombiners;
-using Microsoft.ML.Runtime.Model;
+using Microsoft.ML.Trainers.Ensemble;
 
 [assembly: LoadableClass(typeof(Average), null, typeof(SignatureCombiner), Average.UserName)]
 [assembly: LoadableClass(typeof(Average), null, typeof(SignatureLoadModel), Average.UserName, Average.LoaderSignature)]
 
-namespace Microsoft.ML.Runtime.Ensemble.OutputCombiners
+namespace Microsoft.ML.Trainers.Ensemble
 {
-    public sealed class Average : BaseAverager, ICanSaveModel, IRegressionOutputCombiner
+    internal sealed class Average : BaseAverager, IRegressionOutputCombiner
     {
         public const string UserName = "Average";
         public const string LoadName = "Average";
@@ -56,8 +56,8 @@ namespace Microsoft.ML.Runtime.Ensemble.OutputCombiners
         public override Combiner<Single> GetCombiner()
         {
             // Force the weights to null.
-            return(ref Single dst, Single[] src, Single[] weights) =>
-                    CombineCore(ref dst, src, null);
+            return (ref Single dst, Single[] src, Single[] weights) =>
+                     CombineCore(ref dst, src, null);
         }
     }
 }

@@ -9,19 +9,18 @@ using System.IO;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.ML.Runtime.Command;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
+using Microsoft.ML.Command;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Runtime;
 
 #if CORECLR
-using Microsoft.ML.Runtime.Internal.Utilities;
 #endif
 
 #if !CORECLR
 using System.Configuration;
 #endif
 
-namespace Microsoft.ML.Runtime.Tools
+namespace Microsoft.ML.Tools
 {
     public static class Maml
     {
@@ -57,8 +56,10 @@ namespace Microsoft.ML.Runtime.Tools
         {
             string currentDirectory = Path.GetDirectoryName(typeof(Maml).Module.FullyQualifiedName);
 
-            using (var env = CreateEnvironment())
+            ConsoleEnvironment env = CreateEnvironment();
+#pragma warning disable CS0618 // This is the command line project, so the usage here is OK.
             using (AssemblyLoadingUtils.CreateAssemblyRegistrar(env, currentDirectory))
+#pragma warning restore CS0618
             using (var progressCancel = new CancellationTokenSource())
             {
                 var progressTrackerTask = Task.Run(() => TrackProgress(env, progressCancel.Token));
@@ -107,7 +108,7 @@ namespace Microsoft.ML.Runtime.Tools
         /// so we always write . If set to true though, this executable will also print stack traces from the
         /// marked exceptions as well.</param>
         /// <returns></returns>
-        internal static int MainCore(ConsoleEnvironment env, string args, bool alwaysPrintStacktrace)
+        internal static int MainCore(IHostEnvironment env, string args, bool alwaysPrintStacktrace)
         {
             // REVIEW: How should extra dlls, tracking, etc be handled? Should the args objects for
             // all commands derive from a common base?
@@ -210,7 +211,6 @@ namespace Microsoft.ML.Runtime.Tools
                 finally
                 {
                 }
-                telemetryPipe.Done();
                 return result;
             }
         }

@@ -3,21 +3,21 @@
 // See the LICENSE file in the project root for more information.
 
 using System;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Runtime.Model;
-using Microsoft.ML.Runtime.Numeric;
+using Microsoft.ML.Data;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Numeric;
+using Microsoft.ML.Runtime;
 
-namespace Microsoft.ML.Runtime.Ensemble.OutputCombiners
+namespace Microsoft.ML.Trainers.Ensemble
 {
-    public abstract class BaseMultiAverager : BaseMultiCombiner
+    internal abstract class BaseMultiAverager : BaseMultiCombiner
     {
-        internal BaseMultiAverager(IHostEnvironment env, string name, ArgumentsBase args)
-            : base(env, name, args)
+        private protected BaseMultiAverager(IHostEnvironment env, string name, OptionsBase options)
+            : base(env, name, options)
         {
         }
 
-        internal BaseMultiAverager(IHostEnvironment env, string name, ModelLoadContext ctx)
+        protected BaseMultiAverager(IHostEnvironment env, string name, ModelLoadContext ctx)
             : base(env, name, ctx)
         {
         }
@@ -35,21 +35,18 @@ namespace Microsoft.ML.Runtime.Ensemble.OutputCombiners
                 return;
             }
 
-            var values = dst.Values;
-            if (Utils.Size(values) < len)
-                values = new Single[len];
-            else
-                Array.Clear(values, 0, len);
-
+            var editor = VBufferEditor.Create(ref dst, len);
+            if (!editor.CreatedNewValues)
+                editor.Values.Clear();
             // Set the output to values.
-            dst = new VBuffer<Single>(len, values, dst.Indices);
+            dst = editor.Commit();
 
             Single weightTotal;
             if (weights == null)
             {
                 weightTotal = src.Length;
                 for (int i = 0; i < src.Length; i++)
-                    VectorUtils.Add(ref src[i], ref dst);
+                    VectorUtils.Add(in src[i], ref dst);
             }
             else
             {
@@ -58,7 +55,7 @@ namespace Microsoft.ML.Runtime.Ensemble.OutputCombiners
                 {
                     var w = weights[i];
                     weightTotal += w;
-                    VectorUtils.AddMult(ref src[i], w, ref dst);
+                    VectorUtils.AddMult(in src[i], w, ref dst);
                 }
             }
 

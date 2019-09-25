@@ -2,105 +2,110 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Float = System.Single;
-
 using System;
 using System.Linq;
-using Microsoft.ML.Core.Data;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.FastTree.Internal;
-using Microsoft.ML.Runtime.Internal.Internallearn;
+using Microsoft.ML.Runtime;
 
-namespace Microsoft.ML.Runtime.FastTree
+namespace Microsoft.ML.Trainers.FastTree
 {
-    public abstract class BoostingFastTreeTrainerBase<TArgs, TTransformer, TModel> : FastTreeTrainerBase<TArgs, TTransformer, TModel>
+    public abstract class BoostingFastTreeTrainerBase<TOptions, TTransformer, TModel> : FastTreeTrainerBase<TOptions, TTransformer, TModel>
         where TTransformer : ISingleFeaturePredictionTransformer<TModel>
-        where TArgs : BoostedTreeArgs, new()
-        where TModel : IPredictorProducing<Float>
+        where TOptions : BoostedTreeOptions, new()
+        where TModel : class
     {
-        protected BoostingFastTreeTrainerBase(IHostEnvironment env, TArgs args, SchemaShape.Column label) : base(env, args, label)
+        private protected BoostingFastTreeTrainerBase(IHostEnvironment env, TOptions options, SchemaShape.Column label) : base(env, options, label)
         {
         }
 
-        protected BoostingFastTreeTrainerBase(IHostEnvironment env, SchemaShape.Column label, string featureColumn,
-            string weightColumn = null, string groupIdColumn = null, Action<TArgs> advancedSettings = null)
-            : base(env, label, featureColumn, weightColumn, groupIdColumn, advancedSettings)
+        private protected BoostingFastTreeTrainerBase(IHostEnvironment env,
+            SchemaShape.Column label,
+            string featureColumnName,
+            string exampleWeightColumnName,
+            string rowGroupColumnName,
+            int numberOfLeaves,
+            int numberOfTrees,
+            int minimumExampleCountPerLeaf,
+            double learningRate)
+            : base(env, label, featureColumnName, exampleWeightColumnName, rowGroupColumnName, numberOfLeaves, numberOfTrees, minimumExampleCountPerLeaf)
         {
+            FastTreeTrainerOptions.LearningRate = learningRate;
         }
 
-        protected override void CheckArgs(IChannel ch)
+        private protected override void CheckOptions(IChannel ch)
         {
-            if (Args.OptimizationAlgorithm == BoostedTreeArgs.OptimizationAlgorithmType.AcceleratedGradientDescent)
-                Args.UseLineSearch = true;
-            if (Args.OptimizationAlgorithm == BoostedTreeArgs.OptimizationAlgorithmType.ConjugateGradientDescent)
-                Args.UseLineSearch = true;
+            if (FastTreeTrainerOptions.OptimizationAlgorithm == BoostedTreeOptions.OptimizationAlgorithmType.AcceleratedGradientDescent)
+                FastTreeTrainerOptions.UseLineSearch = true;
+            if (FastTreeTrainerOptions.OptimizationAlgorithm == BoostedTreeOptions.OptimizationAlgorithmType.ConjugateGradientDescent)
+                FastTreeTrainerOptions.UseLineSearch = true;
 
-            if (Args.CompressEnsemble && Args.WriteLastEnsemble)
+            if (FastTreeTrainerOptions.CompressEnsemble && FastTreeTrainerOptions.WriteLastEnsemble)
                 throw ch.Except("Ensemble compression cannot be done when forcing to write last ensemble (hl)");
 
-            if (Args.NumLeaves > 2 && Args.HistogramPoolSize > Args.NumLeaves - 1)
+            if (FastTreeTrainerOptions.NumberOfLeaves > 2 && FastTreeTrainerOptions.HistogramPoolSize > FastTreeTrainerOptions.NumberOfLeaves - 1)
                 throw ch.Except("Histogram pool size (ps) must be at least 2.");
 
-            if (Args.NumLeaves > 2 && Args.HistogramPoolSize > Args.NumLeaves - 1)
+            if (FastTreeTrainerOptions.NumberOfLeaves > 2 && FastTreeTrainerOptions.HistogramPoolSize > FastTreeTrainerOptions.NumberOfLeaves - 1)
                 throw ch.Except("Histogram pool size (ps) must be at most numLeaves - 1.");
 
-            if (Args.EnablePruning && !HasValidSet)
+            if (FastTreeTrainerOptions.EnablePruning && !HasValidSet)
                 throw ch.Except("Cannot perform pruning (pruning) without a validation set (valid).");
 
-            if (Args.EarlyStoppingRule != null && !HasValidSet)
+            bool doEarlyStop = FastTreeTrainerOptions.EarlyStoppingRuleFactory != null;
+            if (doEarlyStop && !HasValidSet)
                 throw ch.Except("Cannot perform early stopping without a validation set (valid).");
 
-            if (Args.UseTolerantPruning && (!Args.EnablePruning || !HasValidSet))
+            if (FastTreeTrainerOptions.UseTolerantPruning && (!FastTreeTrainerOptions.EnablePruning || !HasValidSet))
                 throw ch.Except("Cannot perform tolerant pruning (prtol) without pruning (pruning) and a validation set (valid)");
 
-            base.CheckArgs(ch);
+            base.CheckOptions(ch);
         }
 
-        protected override TreeLearner ConstructTreeLearner(IChannel ch)
+        private protected override TreeLearner ConstructTreeLearner(IChannel ch)
         {
             return new LeastSquaresRegressionTreeLearner(
-                TrainSet, Args.NumLeaves, Args.MinDocumentsInLeafs, Args.EntropyCoefficient,
-                Args.FeatureFirstUsePenalty, Args.FeatureReusePenalty, Args.SoftmaxTemperature,
-                Args.HistogramPoolSize, Args.RngSeed, Args.SplitFraction, Args.FilterZeroLambdas,
-                Args.AllowEmptyTrees, Args.GainConfidenceLevel, Args.MaxCategoricalGroupsPerNode,
-                Args.MaxCategoricalSplitPoints, BsrMaxTreeOutput(), ParallelTraining,
-                Args.MinDocsPercentageForCategoricalSplit, Args.Bundling, Args.MinDocsForCategoricalSplit, Args.Bias);
+                TrainSet, FastTreeTrainerOptions.NumberOfLeaves, FastTreeTrainerOptions.MinimumExampleCountPerLeaf, FastTreeTrainerOptions.EntropyCoefficient,
+                FastTreeTrainerOptions.FeatureFirstUsePenalty, FastTreeTrainerOptions.FeatureReusePenalty, FastTreeTrainerOptions.SoftmaxTemperature,
+                FastTreeTrainerOptions.HistogramPoolSize, FastTreeTrainerOptions.Seed, FastTreeTrainerOptions.FeatureFractionPerSplit, FastTreeTrainerOptions.FilterZeroLambdas,
+                FastTreeTrainerOptions.AllowEmptyTrees, FastTreeTrainerOptions.GainConfidenceLevel, FastTreeTrainerOptions.MaximumCategoricalGroupCountPerNode,
+                FastTreeTrainerOptions.MaximumCategoricalSplitPointCount, BsrMaxTreeOutput(), ParallelTraining,
+                FastTreeTrainerOptions.MinimumExampleFractionForCategoricalSplit, FastTreeTrainerOptions.Bundling, FastTreeTrainerOptions.MinimumExamplesForCategoricalSplit,
+                FastTreeTrainerOptions.Bias, Host);
         }
 
-        protected override OptimizationAlgorithm ConstructOptimizationAlgorithm(IChannel ch)
+        private protected override OptimizationAlgorithm ConstructOptimizationAlgorithm(IChannel ch)
         {
             Contracts.CheckValue(ch, nameof(ch));
             OptimizationAlgorithm optimizationAlgorithm;
             IGradientAdjuster gradientWrapper = MakeGradientWrapper(ch);
 
-            switch (Args.OptimizationAlgorithm)
+            switch (FastTreeTrainerOptions.OptimizationAlgorithm)
             {
-                case BoostedTreeArgs.OptimizationAlgorithmType.GradientDescent:
+                case BoostedTreeOptions.OptimizationAlgorithmType.GradientDescent:
                     optimizationAlgorithm = new GradientDescent(Ensemble, TrainSet, InitTrainScores, gradientWrapper);
                     break;
-                case BoostedTreeArgs.OptimizationAlgorithmType.AcceleratedGradientDescent:
+                case BoostedTreeOptions.OptimizationAlgorithmType.AcceleratedGradientDescent:
                     optimizationAlgorithm = new AcceleratedGradientDescent(Ensemble, TrainSet, InitTrainScores, gradientWrapper);
                     break;
-                case BoostedTreeArgs.OptimizationAlgorithmType.ConjugateGradientDescent:
+                case BoostedTreeOptions.OptimizationAlgorithmType.ConjugateGradientDescent:
                     optimizationAlgorithm = new ConjugateGradientDescent(Ensemble, TrainSet, InitTrainScores, gradientWrapper);
                     break;
                 default:
-                    throw ch.Except("Unknown optimization algorithm '{0}'", Args.OptimizationAlgorithm);
+                    throw ch.Except("Unknown optimization algorithm '{0}'", FastTreeTrainerOptions.OptimizationAlgorithm);
             }
 
             optimizationAlgorithm.TreeLearner = ConstructTreeLearner(ch);
             optimizationAlgorithm.ObjectiveFunction = ConstructObjFunc(ch);
-            optimizationAlgorithm.Smoothing = Args.Smoothing;
-            optimizationAlgorithm.DropoutRate = Args.DropoutRate;
-            optimizationAlgorithm.DropoutRng = new Random(Args.RngSeed);
+            optimizationAlgorithm.Smoothing = FastTreeTrainerOptions.Smoothing;
+            optimizationAlgorithm.DropoutRate = FastTreeTrainerOptions.DropoutRate;
+            optimizationAlgorithm.DropoutRng = new Random(FastTreeTrainerOptions.Seed);
             optimizationAlgorithm.PreScoreUpdateEvent += PrintTestGraph;
 
             return optimizationAlgorithm;
         }
 
-        protected override IGradientAdjuster MakeGradientWrapper(IChannel ch)
+        private protected override IGradientAdjuster MakeGradientWrapper(IChannel ch)
         {
-            if (!Args.BestStepRankingRegressionTrees)
+            if (!FastTreeTrainerOptions.BestStepRankingRegressionTrees)
                 return base.MakeGradientWrapper(ch);
 
             // REVIEW: If this is ranking specific than cmd.bestStepRankingRegressionTrees and
@@ -111,9 +116,9 @@ namespace Microsoft.ML.Runtime.FastTree
                 return new BestStepRegressionGradientWrapper();
         }
 
-        protected override bool ShouldStop(IChannel ch, ref IEarlyStoppingCriterion earlyStoppingRule, ref int bestIteration)
+        private protected override bool ShouldStop(IChannel ch, ref EarlyStoppingRuleBase earlyStoppingRule, ref int bestIteration)
         {
-            if (Args.EarlyStoppingRule == null)
+            if (FastTreeTrainerOptions.EarlyStoppingRuleFactory == null)
                 return false;
 
             ch.AssertValue(ValidTest);
@@ -126,16 +131,19 @@ namespace Microsoft.ML.Runtime.FastTree
             var trainingResult = TrainTest.ComputeTests().First();
             ch.Assert(trainingResult.FinalValue >= 0);
 
-            // Create early stopping rule.
+            // Create early stopping rule if it's null.
             if (earlyStoppingRule == null)
             {
-                earlyStoppingRule = Args.EarlyStoppingRule.CreateComponent(Host, lowerIsBetter);
-                ch.Assert(earlyStoppingRule != null);
+                if (FastTreeTrainerOptions.EarlyStoppingRuleFactory != null)
+                    earlyStoppingRule = FastTreeTrainerOptions.EarlyStoppingRuleFactory.CreateComponent(Host, lowerIsBetter);
             }
 
+            // Early stopping rule cannot be null!
+            ch.Assert(earlyStoppingRule != null);
+
             bool isBestCandidate;
-            bool shouldStop = earlyStoppingRule.CheckScore((Float)validationResult.FinalValue,
-                (Float)trainingResult.FinalValue, out isBestCandidate);
+            bool shouldStop = earlyStoppingRule.CheckScore((float)validationResult.FinalValue,
+                (float)trainingResult.FinalValue, out isBestCandidate);
 
             if (isBestCandidate)
                 bestIteration = Ensemble.NumTrees;
@@ -143,10 +151,10 @@ namespace Microsoft.ML.Runtime.FastTree
             return shouldStop;
         }
 
-        protected override int GetBestIteration(IChannel ch)
+        private protected override int GetBestIteration(IChannel ch)
         {
             int bestIteration = Ensemble.NumTrees;
-            if (!Args.WriteLastEnsemble && PruningTest != null)
+            if (!FastTreeTrainerOptions.WriteLastEnsemble && PruningTest != null)
             {
                 bestIteration = PruningTest.BestIteration;
                 ch.Info("Pruning picked iteration {0}", bestIteration);
@@ -157,17 +165,17 @@ namespace Microsoft.ML.Runtime.FastTree
         /// <summary>
         /// Retrieves max tree output if best regression step option is active or returns negative value otherwise.
         /// </summary>
-        protected double BsrMaxTreeOutput()
+        private protected double BsrMaxTreeOutput()
         {
-            if (Args.BestStepRankingRegressionTrees)
-                return Args.MaxTreeOutput;
+            if (FastTreeTrainerOptions.BestStepRankingRegressionTrees)
+                return FastTreeTrainerOptions.MaximumTreeOutput;
             else
                 return -1;
         }
 
-        protected override bool ShouldRandomStartOptimizer()
+        private protected override bool ShouldRandomStartOptimizer()
         {
-            return Args.RandomStart;
+            return FastTreeTrainerOptions.RandomStart;
         }
     }
 }

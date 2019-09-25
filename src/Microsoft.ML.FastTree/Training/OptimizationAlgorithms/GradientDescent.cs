@@ -5,10 +5,11 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Microsoft.ML.Runtime;
 
-namespace Microsoft.ML.Runtime.FastTree.Internal
+namespace Microsoft.ML.Trainers.FastTree
 {
-    public class GradientDescent : OptimizationAlgorithm
+    internal class GradientDescent : OptimizationAlgorithm
     {
         private IGradientAdjuster _gradientWrapper;
 
@@ -21,7 +22,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
         private double[] _droppedScores;
         private double[] _scores;
 
-        public GradientDescent(Ensemble ensemble, Dataset trainData, double[] initTrainScores, IGradientAdjuster gradientWrapper)
+        internal GradientDescent(InternalTreeEnsemble ensemble, Dataset trainData, double[] initTrainScores, IGradientAdjuster gradientWrapper)
             : base(ensemble, trainData, initTrainScores)
         {
             _gradientWrapper = gradientWrapper;
@@ -33,7 +34,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
             return new ScoreTracker(name, set, initScores);
         }
 
-        protected virtual double[] GetGradient(IChannel ch)
+        private protected virtual double[] GetGradient(IChannel ch)
         {
             Contracts.AssertValue(ch);
             if (DropoutRate > 0)
@@ -75,7 +76,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
             }
             else
                 return ObjectiveFunction.GetGradient(ch, TrainingScores.Scores);
-            }
+        }
 
         protected virtual double[] AdjustTargetsAndSetWeights(IChannel ch)
         {
@@ -90,11 +91,11 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
             }
         }
 
-        public override RegressionTree TrainingIteration(IChannel ch, bool[] activeFeatures)
+        internal override InternalRegressionTree TrainingIteration(IChannel ch, bool[] activeFeatures)
         {
             Contracts.CheckValue(ch, nameof(ch));
             // Fit a regression tree to the gradient using least squares.
-            RegressionTree tree = TreeLearner.FitTargets(ch, activeFeatures, AdjustTargetsAndSetWeights(ch));
+            InternalRegressionTree tree = TreeLearner.FitTargets(ch, activeFeatures, AdjustTargetsAndSetWeights(ch));
             if (tree == null)
                 return null; // Could not learn a tree. Exit.
 
@@ -144,7 +145,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
     /// <summary>
     /// Interface for wrapping with weights of gradient target values
     /// </summary>
-    public interface IGradientAdjuster
+    internal interface IGradientAdjuster
     {
         /// <summary>
         /// Create wrapping of gradient target values

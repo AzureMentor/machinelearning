@@ -5,8 +5,10 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Security;
+using Microsoft.ML.Runtime;
 
-namespace Microsoft.ML.Runtime.FastTree.Internal
+namespace Microsoft.ML.Trainers.FastTree
 {
 #if USE_SINGLE_PRECISION
     using FloatType = System.Single;
@@ -31,11 +33,6 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
         public override IntArrayBits BitsPerItem
         {
             get { return _bpi; }
-        }
-
-        public override MD5Hash MD5Hash
-        {
-            get { return MD5Hasher.Hash(_data) ^ MD5Hasher.Hash(_segLength) ^ MD5Hasher.Hash(_segType); }
         }
 
         public override IntArrayType Type
@@ -488,31 +485,31 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
             }
             bits = b;
         }
-
+        internal const string NativePath = "FastTreeNative";
 #pragma warning disable TLC_GeneralName // Externs follow their own rules.
-        [DllImport("FastTreeNative", CallingConvention = CallingConvention.StdCall, CharSet = CharSet.Ansi)]
+        [DllImport(NativePath, CharSet = CharSet.Ansi), SuppressUnmanagedCodeSecurity]
         private static extern unsafe void C_SegmentFindOptimalPath21(uint* valv, int valc, long* pBits, int* pTransitions);
 
-        [DllImport("FastTreeNative", CallingConvention = CallingConvention.StdCall, CharSet = CharSet.Ansi)]
+        [DllImport(NativePath, CharSet = CharSet.Ansi), SuppressUnmanagedCodeSecurity]
         private static extern unsafe void C_SegmentFindOptimalPath15(uint* valv, int valc, long* pBits, int* pTransitions);
 
-        [DllImport("FastTreeNative", CallingConvention = CallingConvention.StdCall, CharSet = CharSet.Ansi)]
+        [DllImport(NativePath, CharSet = CharSet.Ansi), SuppressUnmanagedCodeSecurity]
         private static extern unsafe void C_SegmentFindOptimalPath7(uint* valv, int valc, long* pBits, int* pTransitions);
 
-        [DllImport("FastTreeNative", CallingConvention = CallingConvention.StdCall, CharSet = CharSet.Ansi)]
+        [DllImport(NativePath, CharSet = CharSet.Ansi), SuppressUnmanagedCodeSecurity]
         private static extern unsafe void C_SegmentFindOptimalCost15(uint* valv, int valc, long* pBits);
 
-        [DllImport("FastTreeNative", CallingConvention = CallingConvention.StdCall, CharSet = CharSet.Ansi)]
+        [DllImport(NativePath, CharSet = CharSet.Ansi), SuppressUnmanagedCodeSecurity]
         private static extern unsafe void C_SegmentFindOptimalCost31(uint* valv, int valc, long* pBits);
 
-        [DllImport("FastTreeNative", CallingConvention = CallingConvention.StdCall)]
+        [DllImport(NativePath)]
         private static extern unsafe int C_SumupSegment_float(
             uint* pData, byte* pSegType, int* pSegLength, int* pIndices,
             float* pSampleOutputs, double* pSampleOutputWeights,
             float* pSumTargetsByBin, double* pSumWeightsByBin,
             int* pCountByBin, int totalCount, double totalSampleOutputs);
 
-        [DllImport("FastTreeNative", CallingConvention = CallingConvention.StdCall)]
+        [DllImport(NativePath)]
         private static extern unsafe int C_SumupSegment_double(
             uint* pData, byte* pSegType, int* pSegLength, int* pIndices,
             double* pSampleOutputs, double* pSampleOutputWeights,

@@ -3,26 +3,26 @@
 // See the LICENSE file in the project root for more information.
 
 using System;
+using Microsoft.ML;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Data;
+using Microsoft.ML.EntryPoints;
+using Microsoft.ML.Internal.Internallearn;
 using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Ensemble.OutputCombiners;
-using Microsoft.ML.Runtime.EntryPoints;
-using Microsoft.ML.Runtime.Internal.Internallearn;
-using Microsoft.ML.Runtime.Model;
+using Microsoft.ML.Trainers.Ensemble;
 
-[assembly: LoadableClass(typeof(MultiWeightedAverage), typeof(MultiWeightedAverage.Arguments), typeof(SignatureCombiner),
+[assembly: LoadableClass(typeof(MultiWeightedAverage), typeof(MultiWeightedAverage.Options), typeof(SignatureCombiner),
     MultiWeightedAverage.UserName, MultiWeightedAverage.LoadName)]
 
 [assembly: LoadableClass(typeof(MultiWeightedAverage), null, typeof(SignatureLoadModel),
     MultiWeightedAverage.UserName, MultiWeightedAverage.LoaderSignature)]
 
-namespace Microsoft.ML.Runtime.Ensemble.OutputCombiners
+namespace Microsoft.ML.Trainers.Ensemble
 {
     /// <summary>
     /// Generic interface for combining outputs of multiple models
     /// </summary>
-    public sealed class MultiWeightedAverage : BaseMultiAverager, IWeightedAverager, ICanSaveModel
+    internal sealed class MultiWeightedAverage : BaseMultiAverager, IWeightedAverager
     {
         public const string UserName = "Multi Weighted Average";
         public const string LoadName = "MultiWeightedAverage";
@@ -40,9 +40,9 @@ namespace Microsoft.ML.Runtime.Ensemble.OutputCombiners
         }
 
         [TlcModule.Component(Name = LoadName, FriendlyName = UserName)]
-        public sealed class Arguments : ArgumentsBase, ISupportMulticlassOutputCombinerFactory
+        public sealed class Options : OptionsBase, ISupportMulticlassOutputCombinerFactory
         {
-            IMultiClassOutputCombiner IComponentFactory<IMultiClassOutputCombiner>.CreateComponent(IHostEnvironment env) => new MultiWeightedAverage(env, this);
+            IMulticlassOutputCombiner IComponentFactory<IMulticlassOutputCombiner>.CreateComponent(IHostEnvironment env) => new MultiWeightedAverage(env, this);
 
             [Argument(ArgumentType.AtMostOnce, HelpText = "The metric type to be used to find the weights for each model", ShortName = "wn", SortOrder = 50)]
             [TGUI(Label = "Metric Name", Description = "The weights are calculated according to the selected metric")]
@@ -52,11 +52,11 @@ namespace Microsoft.ML.Runtime.Ensemble.OutputCombiners
         private readonly MultiWeightageKind _weightageKind;
         public string WeightageMetricName { get { return _weightageKind.ToString(); } }
 
-        public MultiWeightedAverage(IHostEnvironment env, Arguments args)
-            : base(env, LoaderSignature, args)
+        public MultiWeightedAverage(IHostEnvironment env, Options options)
+            : base(env, LoaderSignature, options)
         {
-            _weightageKind = args.WeightageName;
-            Host.CheckUserArg(Enum.IsDefined(typeof(MultiWeightageKind), _weightageKind), nameof(args.WeightageName));
+            _weightageKind = options.WeightageName;
+            Host.CheckUserArg(Enum.IsDefined(typeof(MultiWeightageKind), _weightageKind), nameof(options.WeightageName));
         }
 
         private MultiWeightedAverage(IHostEnvironment env, ModelLoadContext ctx)
@@ -95,11 +95,11 @@ namespace Microsoft.ML.Runtime.Ensemble.OutputCombiners
     }
 
     // These values are serialized, so should not be changed.
-    public enum MultiWeightageKind
+    internal enum MultiWeightageKind
     {
-        [TGUI(Label = MultiClassClassifierEvaluator.AccuracyMicro)]
+        [TGUI(Label = MulticlassClassificationEvaluator.AccuracyMicro)]
         AccuracyMicroAvg = 0,
-        [TGUI(Label = MultiClassClassifierEvaluator.AccuracyMacro)]
+        [TGUI(Label = MulticlassClassificationEvaluator.AccuracyMacro)]
         AccuracyMacroAvg = 1
     }
 }

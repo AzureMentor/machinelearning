@@ -2,7 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Microsoft.ML.Runtime.Api;
+using Microsoft.ML.Data;
 using Microsoft.ML.TestFramework;
 using Xunit.Abstractions;
 
@@ -19,14 +19,22 @@ namespace Microsoft.ML.Tests.Scenarios.Api
 
         public class IrisData : IrisDataNoLabel
         {
+            [LoadColumn(4), ColumnName("Label")]
             public string Label;
         }
 
         public class IrisDataNoLabel
         {
+            [LoadColumn(0)]
             public float SepalLength;
+
+            [LoadColumn(1)]
             public float SepalWidth;
+
+            [LoadColumn(2)]
             public float PetalLength;
+
+            [LoadColumn(3)]
             public float PetalWidth;
         }
 
@@ -35,11 +43,18 @@ namespace Microsoft.ML.Tests.Scenarios.Api
             public string PredictedLabel;
             public float[] Score;
         }
+        public class IrisPredictionNotCasted
+        {
+            public uint PredictedLabel;
+            public float[] Score;
+        }
 
         public class SentimentData
         {
-            [ColumnName("Label")]
+            [LoadColumn(0), ColumnName("Label")]
             public bool Sentiment;
+
+            [LoadColumn(1)]
             public string SentimentText;
         }
 

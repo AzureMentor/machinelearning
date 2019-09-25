@@ -2,13 +2,11 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Microsoft.ML.Runtime.Api;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Data.IO;
-using Microsoft.ML.Runtime.Model;
-using Microsoft.ML.Runtime.RunTests;
-using Microsoft.ML.Runtime.Tools;
+using System;
 using System.IO;
+using Microsoft.ML.Data;
+using Microsoft.ML.Data.IO;
+using Microsoft.ML.RunTests;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -21,53 +19,74 @@ namespace Microsoft.ML.Tests.Transformers
         }
 
         [Fact]
+        void TestConcatNoInputColumns()
+        {
+            var thrown = false;
+
+            try
+            {
+                var pipe = ML.Transforms.Concatenate("Features");
+            }
+            catch(Exception ex)
+            {
+                Assert.Contains("Input columns not specified", ex.Message);
+                thrown = true;
+
+            }
+            Assert.True(thrown);
+            Done();
+        }
+
+        [Fact]
         void TestConcat()
         {
-            string dataPath = GetDataPath("adult.test");
+            string dataPath = GetDataPath("adult.tiny.with-schema.txt");
 
             var source = new MultiFileSource(dataPath);
-            var loader = new TextLoader(Env, new TextLoader.Arguments
+            var loader = new TextLoader(ML, new TextLoader.Options
             {
-                Column = new[]{
-                    new TextLoader.Column("float1", DataKind.R4, 0),
-                    new TextLoader.Column("float4", DataKind.R4, new[]{new TextLoader.Range(0), new TextLoader.Range(2), new TextLoader.Range(4), new TextLoader.Range(10) }),
-                    new TextLoader.Column("vfloat", DataKind.R4, new[]{new TextLoader.Range(0), new TextLoader.Range(2), new TextLoader.Range(4), new TextLoader.Range(10, null) { AutoEnd = false, VariableEnd = true } })
+                Columns = new[]{
+                    new TextLoader.Column("float1", DataKind.Single, 9),
+                    new TextLoader.Column("float4", DataKind.Single, new[]{new TextLoader.Range(9), new TextLoader.Range(10), new TextLoader.Range(11), new TextLoader.Range(12) }),
+                    new TextLoader.Column("float6", DataKind.Single, new[]{new TextLoader.Range(9), new TextLoader.Range(10), new TextLoader.Range(11), new TextLoader.Range(12, 14) }),
+                    new TextLoader.Column("vfloat", DataKind.Single, new[]{new TextLoader.Range(14, null) { AutoEnd = false, VariableEnd = true } })
                 },
-                Separator = ",",
+                Separator = "\t",
                 HasHeader = true
             }, new MultiFileSource(dataPath));
-            var data = loader.Read(source);
+            var data = loader.Load(source);
 
-            ColumnType GetType(ISchema schema, string name)
+            DataViewType GetType(DataViewSchema schema, string name)
             {
                 Assert.True(schema.TryGetColumnIndex(name, out int cIdx), $"Could not find '{name}'");
-                return schema.GetColumnType(cIdx);
+                return schema[cIdx].Type;
             }
-            var pipe = new ConcatEstimator(Env, "f1", "float1")
-                .Append(new ConcatEstimator(Env, "f2", "float1", "float1"))
-                .Append(new ConcatEstimator(Env, "f3", "float4", "float1"))
-                .Append(new ConcatEstimator(Env, "f4", "vfloat", "float1"));
 
-            data = TakeFilter.Create(Env, data, 10);
+            var pipe = ML.Transforms.Concatenate("f1", "float1")
+                .Append(ML.Transforms.Concatenate("f2", "float1", "float1"))
+                .Append(ML.Transforms.Concatenate("f3", "float4", "float1"))
+                .Append(ML.Transforms.Concatenate("f4", "float6", "vfloat", "float1"));
+
+            data = ML.Data.TakeRows(data, 10);
             data = pipe.Fit(data).Transform(data);
 
-            ColumnType t;
+            DataViewType t;
             t = GetType(data.Schema, "f1");
-            Assert.True(t.IsVector && t.ItemType == NumberType.R4 && t.VectorSize == 1);
+            Assert.True(t is VectorDataViewType vt1 && vt1.ItemType == NumberDataViewType.Single && vt1.Size == 1);
             t = GetType(data.Schema, "f2");
-            Assert.True(t.IsVector && t.ItemType == NumberType.R4 && t.VectorSize == 2);
+            Assert.True(t is VectorDataViewType vt2 && vt2.ItemType == NumberDataViewType.Single && vt2.Size == 2);
             t = GetType(data.Schema, "f3");
-            Assert.True(t.IsVector && t.ItemType == NumberType.R4 && t.VectorSize == 5);
+            Assert.True(t is VectorDataViewType vt3 && vt3.ItemType == NumberDataViewType.Single && vt3.Size == 5);
             t = GetType(data.Schema, "f4");
-            Assert.True(t.IsVector && t.ItemType == NumberType.R4 && t.VectorSize == 0);
+            Assert.True(t is VectorDataViewType vt4 && vt4.ItemType == NumberDataViewType.Single && vt4.Size == 0);
 
-            data = new ChooseColumnsTransform(Env, data, "f1", "f2", "f3", "f4");
+            data = ML.Transforms.SelectColumns("f1", "f2", "f3", "f4").Fit(data).Transform(data);
 
             var subdir = Path.Combine("Transform", "Concat");
             var outputPath = GetOutputPath(subdir, "Concat1.tsv");
             using (var ch = Env.Start("save"))
             {
-                var saver = new TextSaver(Env, new TextSaver.Arguments { Silent = true, Dense = true });
+                var saver = new TextSaver(ML, new TextSaver.Arguments { Silent = true, Dense = true });
                 using (var fs = File.Create(outputPath))
                     DataSaverUtils.SaveDataView(ch, saver, data, fs, keepHidden: false);
             }
@@ -79,47 +98,59 @@ namespace Microsoft.ML.Tests.Transformers
         [Fact]
         public void ConcatWithAliases()
         {
-            string dataPath = GetDataPath("adult.test");
+            string dataPath = GetDataPath("adult.tiny.with-schema.txt");
 
             var source = new MultiFileSource(dataPath);
-            var loader = new TextLoader(Env, new TextLoader.Arguments
+            var loader = new TextLoader(ML, new TextLoader.Options
             {
-                Column = new[]{
-                    new TextLoader.Column("float1", DataKind.R4, 0),
-                    new TextLoader.Column("float4", DataKind.R4, new[]{new TextLoader.Range(0), new TextLoader.Range(2), new TextLoader.Range(4), new TextLoader.Range(10) }),
-                    new TextLoader.Column("vfloat", DataKind.R4, new[]{new TextLoader.Range(0), new TextLoader.Range(2), new TextLoader.Range(4), new TextLoader.Range(10, null) { AutoEnd = false, VariableEnd = true } })
+                Columns = new[]{
+                    new TextLoader.Column("float1", DataKind.Single, 9),
+                    new TextLoader.Column("float4", DataKind.Single, new[]{new TextLoader.Range(9), new TextLoader.Range(10), new TextLoader.Range(11), new TextLoader.Range(12) }),
+                    new TextLoader.Column("vfloat", DataKind.Single, new[]{new TextLoader.Range(9), new TextLoader.Range(10), new TextLoader.Range(11), new TextLoader.Range(12, null) { AutoEnd = false, VariableEnd = true } })
                 },
-                Separator = ",",
+                Separator = "\t",
                 HasHeader = true
             }, new MultiFileSource(dataPath));
-            var data = loader.Read(source);
+            var data = loader.Load(source);
 
-            ColumnType GetType(ISchema schema, string name)
+            DataViewType GetType(DataViewSchema schema, string name)
             {
                 Assert.True(schema.TryGetColumnIndex(name, out int cIdx), $"Could not find '{name}'");
-                return schema.GetColumnType(cIdx);
+                return schema[cIdx].Type;
             }
 
-            data = TakeFilter.Create(Env, data, 10);
+            data = ML.Data.TakeRows(data, 10);
 
-            var concater = new ConcatTransform(Env,
-                new ConcatTransform.ColumnInfo("f2", new[] { ("float1", "FLOAT1"), ("float1", "FLOAT2") }),
-                new ConcatTransform.ColumnInfo("f3", new[] { ("float4", "FLOAT4"), ("float1", "FLOAT1") }));
+            var concater = new ColumnConcatenatingTransformer(ML,
+                new ColumnConcatenatingTransformer.ColumnOptions("f2", new[] { ("float1", "FLOAT1"), ("float1", "FLOAT2") }),
+                new ColumnConcatenatingTransformer.ColumnOptions("f3", new[] { ("float4", "FLOAT4"), ("float1", "FLOAT1") }));
             data = concater.Transform(data);
 
-            ColumnType t;
-            t = GetType(data.Schema, "f2");
-            Assert.True(t.IsVector && t.ItemType == NumberType.R4 && t.VectorSize == 2);
-            t = GetType(data.Schema, "f3");
-            Assert.True(t.IsVector && t.ItemType == NumberType.R4 && t.VectorSize == 5);
+            // Test Columns property.
+            var columns = concater.Columns;
+            var colEnumerator = columns.GetEnumerator();
+            colEnumerator.MoveNext();
+            Assert.True(colEnumerator.Current.outputColumnName == "f2" && 
+                colEnumerator.Current.inputColumnNames[0] == "float1" && 
+                colEnumerator.Current.inputColumnNames[1] == "float1");
+            colEnumerator.MoveNext();
+            Assert.True(colEnumerator.Current.outputColumnName == "f3" &&
+                colEnumerator.Current.inputColumnNames[0] == "float4" &&
+                colEnumerator.Current.inputColumnNames[1] == "float1");
 
-            data = new ChooseColumnsTransform(Env, data, "f2", "f3");
+            DataViewType t;
+            t = GetType(data.Schema, "f2");
+            Assert.True(t is VectorDataViewType vt2 && vt2.ItemType == NumberDataViewType.Single && vt2.Size == 2);
+            t = GetType(data.Schema, "f3");
+            Assert.True(t is VectorDataViewType vt3 && vt3.ItemType == NumberDataViewType.Single && vt3.Size == 5);
+
+            data = ML.Transforms.SelectColumns("f2", "f3" ).Fit(data).Transform(data);
 
             var subdir = Path.Combine("Transform", "Concat");
             var outputPath = GetOutputPath(subdir, "Concat2.tsv");
             using (var ch = Env.Start("save"))
             {
-                var saver = new TextSaver(Env, new TextSaver.Arguments { Silent = true, Dense = true });
+                var saver = new TextSaver(ML, new TextSaver.Arguments { Silent = true, Dense = true });
                 using (var fs = File.Create(outputPath))
                     DataSaverUtils.SaveDataView(ch, saver, data, fs, keepHidden: false);
             }

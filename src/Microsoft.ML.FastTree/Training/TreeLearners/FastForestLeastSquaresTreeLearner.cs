@@ -3,10 +3,11 @@
 // See the LICENSE file in the project root for more information.
 
 using System;
+using Microsoft.ML.Runtime;
 
-namespace Microsoft.ML.Runtime.FastTree.Internal
+namespace Microsoft.ML.Trainers.FastTree
 {
-    public class RandomForestLeastSquaresTreeLearner : LeastSquaresRegressionTreeLearner
+    internal class RandomForestLeastSquaresTreeLearner : LeastSquaresRegressionTreeLearner
     {
         private int _quantileSampleCount;
         private bool _quantileEnabled;
@@ -14,23 +15,23 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
         public RandomForestLeastSquaresTreeLearner(Dataset trainData, int numLeaves, int minDocsInLeaf, Double entropyCoefficient, Double featureFirstUsePenalty,
             Double featureReusePenalty, Double softmaxTemperature, int histogramPoolSize, int randomSeed, Double splitFraction, bool allowEmptyTrees,
             Double gainConfidenceLevel, int maxCategoricalGroupsPerNode, int maxCategoricalSplitPointsPerNode, bool quantileEnabled, int quantileSampleCount, IParallelTraining parallelTraining,
-            double minDocsPercentageForCategoricalSplit, Bundle bundling, int minDocsForCategoricalSplit, double bias)
+            double minDocsPercentageForCategoricalSplit, Bundle bundling, int minDocsForCategoricalSplit, double bias, IHost host)
             : base(trainData, numLeaves, minDocsInLeaf, entropyCoefficient, featureFirstUsePenalty, featureReusePenalty, softmaxTemperature, histogramPoolSize,
-                randomSeed, splitFraction, false, allowEmptyTrees, gainConfidenceLevel, maxCategoricalGroupsPerNode, maxCategoricalSplitPointsPerNode, - 1, parallelTraining,
-                minDocsPercentageForCategoricalSplit, bundling, minDocsForCategoricalSplit, bias)
+                randomSeed, splitFraction, false, allowEmptyTrees, gainConfidenceLevel, maxCategoricalGroupsPerNode, maxCategoricalSplitPointsPerNode, -1, parallelTraining,
+                minDocsPercentageForCategoricalSplit, bundling, minDocsForCategoricalSplit, bias, host)
         {
             _quantileSampleCount = quantileSampleCount;
             _quantileEnabled = quantileEnabled;
         }
 
-        protected override RegressionTree NewTree()
+        protected override InternalRegressionTree NewTree()
         {
-            return new QuantileRegressionTree(NumLeaves);
+            return new InternalQuantileRegressionTree(NumLeaves);
         }
 
-        public RegressionTree FitTargets(IChannel ch, bool[] activeFeatures, Double[] weightedtargets, Double[] targets, Double[] weights)
+        public InternalRegressionTree FitTargets(IChannel ch, bool[] activeFeatures, Double[] weightedtargets, Double[] targets, Double[] weights)
         {
-            var tree = (QuantileRegressionTree)FitTargets(ch, activeFeatures, weightedtargets);
+            var tree = (InternalQuantileRegressionTree)FitTargets(ch, activeFeatures, weightedtargets);
             if (tree != null && _quantileEnabled)
             {
                 Double[] distributionWeights = null;

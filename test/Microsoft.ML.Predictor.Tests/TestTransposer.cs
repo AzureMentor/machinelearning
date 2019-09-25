@@ -5,14 +5,15 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Data.IO;
-using Microsoft.ML.Runtime.Internal.Utilities;
+using Microsoft.ML.Data;
+using Microsoft.ML.Data.IO;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Runtime;
 using Microsoft.ML.TestFramework;
 using Xunit;
 using Xunit.Abstractions;
 
-namespace Microsoft.ML.Runtime.RunTests
+namespace Microsoft.ML.RunTests
 {
     public sealed class TestTransposer : TestDataPipeBase
     {
@@ -22,31 +23,35 @@ namespace Microsoft.ML.Runtime.RunTests
 
         private static T[] NaiveTranspose<T>(IDataView view, int col)
         {
-            var type = view.Schema.GetColumnType(col);
+            var type = view.Schema[col].Type;
             int rc = checked((int)DataViewUtils.ComputeRowCount(view));
-            Assert.True(type.ItemType.RawType == typeof(T));
-            Assert.True(type.ValueCount > 0);
-            T[] retval = new T[rc * type.ValueCount];
+            var vecType = type as VectorDataViewType;
+            var itemType = vecType?.ItemType ?? type;
+            Assert.Equal(typeof(T), itemType.RawType);
+            Assert.NotEqual(0, vecType?.Size);
+            T[] retval = new T[rc * (vecType?.Size ?? 1)];
 
-            using (var cursor = view.GetRowCursor(c => c == col))
+            using (var cursor = view.GetRowCursor(view.Schema[col]))
             {
-                if (type.IsVector)
+                if (type is VectorDataViewType)
                 {
-                    var getter = cursor.GetGetter<VBuffer<T>>(col);
-                    VBuffer<T> temp = default(VBuffer<T>);
+                    var getter = cursor.GetGetter<VBuffer<T>>(cursor.Schema[col]);
+                    VBuffer<T> temp = default;
                     int offset = 0;
                     while (cursor.MoveNext())
                     {
                         Assert.True(0 <= offset && offset < rc && offset == cursor.Position);
                         getter(ref temp);
-                        for (int i = 0; i < temp.Count; ++i)
-                            retval[(temp.IsDense ? i : temp.Indices[i]) * rc + offset] = temp.Values[i];
+                        var tempValues = temp.GetValues();
+                        var tempIndices = temp.GetIndices();
+                        for (int i = 0; i < tempValues.Length; ++i)
+                            retval[(temp.IsDense ? i : tempIndices[i]) * rc + offset] = tempValues[i];
                         offset++;
                     }
                 }
                 else
                 {
-                    var getter = cursor.GetGetter<T>(col);
+                    var getter = cursor.GetGetter<T>(cursor.Schema[col]);
                     while (cursor.MoveNext())
                     {
                         Assert.True(0 <= cursor.Position && cursor.Position < rc);
@@ -59,22 +64,24 @@ namespace Microsoft.ML.Runtime.RunTests
 
         private static void TransposeCheckHelper<T>(IDataView view, int viewCol, ITransposeDataView trans)
         {
+            Assert.NotNull(view);
+            Assert.NotNull(trans);
+
             int col = viewCol;
-            var type = trans.TransposeSchema.GetSlotType(col);
-            var colType = trans.Schema.GetColumnType(col);
-            Assert.Equal(view.Schema.GetColumnName(viewCol), trans.Schema.GetColumnName(col));
-            var expectedType = view.Schema.GetColumnType(viewCol);
-            // Unfortunately can't use equals because column type equality is a simple reference comparison. :P
+            VectorDataViewType type = trans.GetSlotType(col);
+            DataViewType colType = trans.Schema[col].Type;
+            Assert.Equal(view.Schema[viewCol].Name, trans.Schema[col].Name);
+            DataViewType expectedType = view.Schema[viewCol].Type;
             Assert.Equal(expectedType, colType);
-            Assert.Equal(DataViewUtils.ComputeRowCount(view), (long)type.VectorSize);
-            string desc = string.Format("Column {0} named '{1}'", col, trans.Schema.GetColumnName(col));
+            string desc = string.Format("Column {0} named '{1}'", col, trans.Schema[col].Name);
+            Assert.Equal(DataViewUtils.ComputeRowCount(view), type.Size);
             Assert.True(typeof(T) == type.ItemType.RawType, $"{desc} had wrong type for slot cursor");
-            Assert.True(type.IsVector, $"{desc} expected to be vector but is not");
-            Assert.True(type.VectorSize > 0, $"{desc} expected to be known sized vector but is not");
-            Assert.True(0 != colType.ValueCount, $"{desc} expected to have fixed size, but does not");
-            int rc = type.VectorSize;
+            Assert.True(type.Size > 0, $"{desc} expected to be known sized vector but is not");
+            int valueCount = (colType as VectorDataViewType)?.Size ?? 1;
+            Assert.True(0 != valueCount, $"{desc} expected to have fixed size, but does not");
+            int rc = type.Size;
             T[] expectedVals = NaiveTranspose<T>(view, viewCol);
-            T[] vals = new T[rc * colType.ValueCount];
+            T[] vals = new T[rc * valueCount];
             Contracts.Assert(vals.Length == expectedVals.Length);
             using (var cursor = trans.GetSlotCursor(col))
             {
@@ -89,7 +96,7 @@ namespace Microsoft.ML.Runtime.RunTests
                     temp.CopyTo(vals, offset);
                     offset += rc;
                 }
-                Assert.True(colType.ValueCount == offset / rc, $"{desc} slot cursor yielded fewer than expected values");
+                Assert.True(valueCount == offset / rc, $"{desc} slot cursor yielded fewer than expected values");
             }
             for (int i = 0; i < vals.Length; ++i)
                 Assert.Equal(expectedVals[i], vals[i]);
@@ -140,7 +147,7 @@ namespace Microsoft.ML.Runtime.RunTests
             return values;
         }
 
-        [Fact(Skip = "Need CoreTLC specific baseline update")]
+        [Fact]
         [TestCategory("Transposer")]
         public void TransposerTest()
         {
@@ -151,17 +158,17 @@ namespace Microsoft.ML.Runtime.RunTests
             // A is to check the splitting of a sparse-ish column.
             var dataA = GenerateHelper(rowCount, 0.1, rgen, () => (int)rgen.Next(), 50, 5, 10, 15);
             dataA[rowCount / 2] = new VBuffer<int>(50, 0, null, null); // Coverage for the null vbuffer case.
-            builder.AddColumn("A", NumberType.I4, dataA);
+            builder.AddColumn("A", NumberDataViewType.Int32, dataA);
             // B is to check the splitting of a dense-ish column.
-            builder.AddColumn("B", NumberType.R8, GenerateHelper(rowCount, 0.8, rgen, rgen.NextDouble, 50, 0, 25, 49));
+            builder.AddColumn("B", NumberDataViewType.Double, GenerateHelper(rowCount, 0.8, rgen, rgen.NextDouble, 50, 0, 25, 49));
             // C is to just have some column we do nothing with.
-            builder.AddColumn("C", NumberType.I2, GenerateHelper(rowCount, 0.1, rgen, () => (short)1, 30, 3, 10, 24));
+            builder.AddColumn("C", NumberDataViewType.Int16, GenerateHelper(rowCount, 0.1, rgen, () => (short)1, 30, 3, 10, 24));
             // D is to check some column we don't have to split because it's sufficiently small.
-            builder.AddColumn("D", NumberType.R8, GenerateHelper(rowCount, 0.1, rgen, rgen.NextDouble, 3, 1));
+            builder.AddColumn("D", NumberDataViewType.Double, GenerateHelper(rowCount, 0.1, rgen, rgen.NextDouble, 3, 1));
             // E is to check a sparse scalar column.
-            builder.AddColumn("E", NumberType.U4, GenerateHelper(rowCount, 0.1, rgen, () => (uint)rgen.Next(int.MinValue, int.MaxValue)));
+            builder.AddColumn("E", NumberDataViewType.UInt32, GenerateHelper(rowCount, 0.1, rgen, () => (uint)rgen.Next(int.MinValue, int.MaxValue)));
             // F is to check a dense-ish scalar column.
-            builder.AddColumn("F", NumberType.I4, GenerateHelper(rowCount, 0.8, rgen, () => rgen.Next()));
+            builder.AddColumn("F", NumberDataViewType.Int32, GenerateHelper(rowCount, 0.8, rgen, () => rgen.Next()));
 
             IDataView view = builder.GetDataView();
 
@@ -181,7 +188,7 @@ namespace Microsoft.ML.Runtime.RunTests
                     Assert.True(trueIndex == index, $"Transpose schema had column '{names[i]}' at unexpected index");
                 }
                 // Check the contents
-                Assert.Null(trans.TransposeSchema.GetSlotType(2)); // C check to see that it's not transposable.
+                Assert.Null(((ITransposeDataView)trans).GetSlotType(2)); // C check to see that it's not transposable.
                 TransposeCheckHelper<int>(view, 0, trans); // A check.
                 TransposeCheckHelper<Double>(view, 1, trans); // B check.
                 TransposeCheckHelper<Double>(view, 3, trans); // D check.
@@ -196,9 +203,10 @@ namespace Microsoft.ML.Runtime.RunTests
             using (Transposer trans = Transposer.Create(Env, view, true, 3, 5, 4))
             {
                 // Check to see that A, B, and C were not transposed somehow.
-                Assert.Null(trans.TransposeSchema.GetSlotType(0));
-                Assert.Null(trans.TransposeSchema.GetSlotType(1));
-                Assert.Null(trans.TransposeSchema.GetSlotType(2));
+                var itdv = (ITransposeDataView)trans;
+                Assert.Null(itdv.GetSlotType(0));
+                Assert.Null(itdv.GetSlotType(1));
+                Assert.Null(itdv.GetSlotType(2));
                 TransposeCheckHelper<Double>(view, 3, trans); // D check.
                 TransposeCheckHelper<uint>(view, 4, trans);   // E check.
                 TransposeCheckHelper<int>(view, 5, trans); // F check.
@@ -216,17 +224,17 @@ namespace Microsoft.ML.Runtime.RunTests
             // A is to check the splitting of a sparse-ish column.
             var dataA = GenerateHelper(rowCount, 0.1, rgen, () => (int)rgen.Next(), 50, 5, 10, 15);
             dataA[rowCount / 2] = new VBuffer<int>(50, 0, null, null); // Coverage for the null vbuffer case.
-            builder.AddColumn("A", NumberType.I4, dataA);
+            builder.AddColumn("A", NumberDataViewType.Int32, dataA);
             // B is to check the splitting of a dense-ish column.
-            builder.AddColumn("B", NumberType.R8, GenerateHelper(rowCount, 0.8, rgen, rgen.NextDouble, 50, 0, 25, 49));
+            builder.AddColumn("B", NumberDataViewType.Double, GenerateHelper(rowCount, 0.8, rgen, rgen.NextDouble, 50, 0, 25, 49));
             // C is to just have some column we do nothing with.
-            builder.AddColumn("C", NumberType.I2, GenerateHelper(rowCount, 0.1, rgen, () => (short)1, 30, 3, 10, 24));
+            builder.AddColumn("C", NumberDataViewType.Int16, GenerateHelper(rowCount, 0.1, rgen, () => (short)1, 30, 3, 10, 24));
             // D is to check some column we don't have to split because it's sufficiently small.
-            builder.AddColumn("D", NumberType.R8, GenerateHelper(rowCount, 0.1, rgen, rgen.NextDouble, 3, 1));
+            builder.AddColumn("D", NumberDataViewType.Double, GenerateHelper(rowCount, 0.1, rgen, rgen.NextDouble, 3, 1));
             // E is to check a sparse scalar column.
-            builder.AddColumn("E", NumberType.U4, GenerateHelper(rowCount, 0.1, rgen, () => (uint)rgen.Next(int.MinValue, int.MaxValue)));
+            builder.AddColumn("E", NumberDataViewType.UInt32, GenerateHelper(rowCount, 0.1, rgen, () => (uint)rgen.Next(int.MinValue, int.MaxValue)));
             // F is to check a dense-ish scalar column.
-            builder.AddColumn("F", NumberType.I4, GenerateHelper(rowCount, 0.8, rgen, () => (int)rgen.Next()));
+            builder.AddColumn("F", NumberDataViewType.Int32, GenerateHelper(rowCount, 0.8, rgen, () => (int)rgen.Next()));
 
             IDataView view = builder.GetDataView();
 
@@ -234,7 +242,7 @@ namespace Microsoft.ML.Runtime.RunTests
             using (MemoryStream mem = new MemoryStream())
             {
                 TransposeSaver saver = new TransposeSaver(Env, new TransposeSaver.Arguments());
-                saver.SaveData(mem, view, Utils.GetIdentityPermutation(view.Schema.ColumnCount));
+                saver.SaveData(mem, view, Utils.GetIdentityPermutation(view.Schema.Count));
                 src = new BytesStreamSource(mem.ToArray());
             }
             TransposeLoader loader = new TransposeLoader(Env, new TransposeLoader.Arguments(), src);

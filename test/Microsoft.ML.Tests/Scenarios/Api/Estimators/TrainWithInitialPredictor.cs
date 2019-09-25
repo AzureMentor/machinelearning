@@ -2,10 +2,9 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Learners;
-using Microsoft.ML.Runtime.RunTests;
+using Microsoft.ML.Data;
+using Microsoft.ML.RunTests;
+using Microsoft.ML.Trainers;
 using Xunit;
 
 namespace Microsoft.ML.Tests.Scenarios.Api
@@ -14,35 +13,35 @@ namespace Microsoft.ML.Tests.Scenarios.Api
     {
         /// <summary>
         /// Train with initial predictor: Similar to the simple train scenario, but also accept a pre-trained initial model.
-        /// The scenario might be one of the online linear learners that can take advantage of this, e.g., averaged perceptron.
+        /// The scenario might be one of the online linear learners that can take advantage of this, for example, averaged perceptron.
         /// </summary>
         [Fact]
-        public void New_TrainWithInitialPredictor()
+        public void TrainWithInitialPredictor()
         {
 
-            using (var env = new LocalEnvironment(seed: 1, conc: 1))
-            {
-                var data = new TextLoader(env, MakeSentimentTextLoaderArgs()).Read(new MultiFileSource(GetDataPath(TestDatasets.Sentiment.trainFilename)));
+            var ml = new MLContext(seed: 1);
 
-                // Pipeline.
-                var pipeline = new TextTransform(env, "SentimentText", "Features");
+            var data = ml.Data.LoadFromTextFile<SentimentData>(GetDataPath(TestDatasets.Sentiment.trainFilename), hasHeader: true);
 
-                // Train the pipeline, prepare train set.
-                var trainData = pipeline.FitAndTransform(data);
+            // Pipeline.
+            var pipeline = ml.Transforms.Text.FeaturizeText("Features", "SentimentText");
 
-                // Train the first predictor.
-                var trainer = new LinearClassificationTrainer(env, new LinearClassificationTrainer.Arguments
-                {
-                    NumThreads = 1
-                }, "Features", "Label");
-                var firstModel = trainer.Fit(trainData);
+            // Train the pipeline, prepare train set. Since it will be scanned multiple times in the subsequent trainer, we cache the 
+            // transformed data in memory.
+            var trainData = ml.Data.Cache(pipeline.Fit(data).Transform(data));
 
-                // Train the second predictor on the same data.
-                var secondTrainer = new AveragedPerceptronTrainer(env, new AveragedPerceptronTrainer.Arguments());
+            // Train the first predictor.
+            var trainer = ml.BinaryClassification.Trainers.SdcaNonCalibrated(
+                new SdcaNonCalibratedBinaryTrainer.Options { NumberOfThreads = 1 });
 
-                var trainRoles = new RoleMappedData(trainData, label: "Label", feature: "Features");
-                var finalModel = secondTrainer.Train(new TrainContext(trainRoles, initialPredictor: firstModel.Model));
-            }
+            var firstModel = trainer.Fit(trainData);
+
+            // Train the second predictor on the same data.
+            var secondTrainer = ml.BinaryClassification.Trainers.AveragedPerceptron("Label","Features");
+
+            var trainRoles = new RoleMappedData(trainData, label: "Label", feature: "Features");
+            var finalModel = ((ITrainer)secondTrainer).Train(new TrainContext(trainRoles, initialPredictor: firstModel.Model));
+
         }
     }
 }

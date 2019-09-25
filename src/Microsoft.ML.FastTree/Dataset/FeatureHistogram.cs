@@ -4,8 +4,9 @@
 
 using System;
 using System.Linq;
+using Microsoft.ML.Runtime;
 
-namespace Microsoft.ML.Runtime.FastTree.Internal
+namespace Microsoft.ML.Trainers.FastTree
 {
 #if USE_SINGLE_PRECISION
     using FloatType = System.Single;
@@ -16,7 +17,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
     /// <summary>
     /// Class to represent statistics of the feature used by LeastSquaresRegressionTreeLearner
     /// </summary>
-    public sealed class FeatureHistogram
+    internal sealed class FeatureHistogram
     {
         public readonly FloatType[] SumTargetsByBin;
         public readonly double[] SumWeightsByBin;
@@ -56,7 +57,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
         {
             return sizeof(int) // NumberFeatureValues
                 + sizeof(int) // the IsSplittable boolean value. Although sizeof(bool) is 1,
-                // but we just estimate it as 4 for alignment
+                              // but we just estimate it as 4 for alignment
                 + 8 // size of reference to _feature in 64 bit machines.
                 + sizeof(int) * numBins // CountByBin
                 + sizeof(FloatType) * numBins // SumTargetsByBin
@@ -138,7 +139,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
         }
     }
 
-    public sealed class SumupInputData
+    internal sealed class SumupInputData
     {
         public int TotalCount;
         public double SumTargets;

@@ -2,9 +2,12 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-namespace Microsoft.ML.Runtime.Internal.CpuMath
+using Microsoft.ML.Internal.CpuMath.Core;
+
+namespace Microsoft.ML.Internal.CpuMath
 {
-    public static class CpuAligenedMathUtils<TMatrix>
+    [BestFriend]
+    internal static class CpuAligenedMathUtils<TMatrix>
         where TMatrix : CpuAlignedMatrixBase, ICpuFullMatrix
     {
         /// <summary>
@@ -75,44 +78,36 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
 
         /// <summary>
         /// Matrix multiplication:
-        /// if (add)
-        ///     dst = mat * src
-        /// else
-        ///     dest += mat * src
+        /// dst = mat * src
         /// </summary>
-        /// <param name="add">The addition flag</param>
         /// <param name="mat">The multiplier matrix</param>
         /// <param name="src">The source vector</param>
         /// <param name="dst">The destination vector</param>
-        public static void MatTimesSrc(bool add, ICpuFullMatrix mat, ICpuVector src, ICpuVector dst)
+        public static void MatTimesSrc(ICpuFullMatrix mat, ICpuVector src, ICpuVector dst)
         {
             bool colMajor = typeof(TMatrix) == typeof(CpuAlignedMatrixCol);
             AssertCompatible(mat, src, dst);
             var m = A(mat);
-            CpuMathUtils.MatTimesSrc(colMajor, add, m.Items, A(src).Items, A(dst).Items, m.RunCnt);
+            CpuMathUtils.MatrixTimesSource(colMajor, m.Items, A(src).Items, A(dst).Items, m.RunCnt);
         }
 
         /// <summary>
         /// Matrix transpose multiplication:
-        /// if (add)
-        ///     dst = mat' * src
-        /// else
-        ///     dest += mat' * src
+        /// dst = mat' * src
         /// </summary>
-        /// <param name="add">The addition flag</param>
         /// <param name="mat">The multiplier matrix</param>
         /// <param name="src">The source vector</param>
         /// <param name="dst">The destination vector</param>
-        public static void MatTranTimesSrc(bool add, ICpuFullMatrix mat, ICpuVector src, ICpuVector dst)
+        public static void MatTranTimesSrc(ICpuFullMatrix mat, ICpuVector src, ICpuVector dst)
         {
             bool colMajor = typeof(TMatrix) == typeof(CpuAlignedMatrixCol);
             AssertCompatible(mat, dst, src);
             var m = A(mat);
-            CpuMathUtils.MatTimesSrc(!colMajor, add, m.Items, A(src).Items, A(dst).Items, m.RunCnt);
+            CpuMathUtils.MatrixTimesSource(!colMajor, m.Items, A(src).Items, A(dst).Items, m.RunCnt);
         }
     }
 
-    public static class GeneralUtils
+    internal static class GeneralUtils
     {
         /// <summary>
         /// Count the number of zero bits in the lonest string of zero's from the lowest significant bit of the input integer.

@@ -2,16 +2,10 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
+using System.Linq;
 using Microsoft.ML.Data;
 using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Data.IO;
-using Microsoft.ML.Runtime.Learners;
-using Microsoft.ML.Runtime.RunTests;
-using Microsoft.ML.Runtime.SymSgd;
-using System;
-using System.IO;
-using System.Linq;
+using Microsoft.ML.Trainers;
 using Xunit;
 
 namespace Microsoft.ML.Tests.TrainerEstimators
@@ -22,8 +16,13 @@ namespace Microsoft.ML.Tests.TrainerEstimators
         public void TestEstimatorSymSgdClassificationTrainer()
         {
             (var pipe, var dataView) = GetBinaryClassificationPipeline();
-            pipe.Append(new SymSgdClassificationTrainer(Env, "Features", "Label"));
-            TestEstimatorCore(pipe, dataView);
+            var trainer = new SymbolicSgdLogisticRegressionBinaryTrainer(Env, new SymbolicSgdLogisticRegressionBinaryTrainer.Options());
+            var pipeWithTrainer = pipe.Append(trainer);
+            TestEstimatorCore(pipeWithTrainer, dataView);
+
+            var transformedDataView = pipe.Fit(dataView).Transform(dataView);
+            var model = trainer.Fit(transformedDataView);
+            trainer.Fit(transformedDataView, model.Model.SubModel);
             Done();
         }
 
@@ -33,20 +32,20 @@ namespace Microsoft.ML.Tests.TrainerEstimators
             (var pipe, var dataView) = GetBinaryClassificationPipeline();
             var transformedData = pipe.Fit(dataView).Transform(dataView);
 
-            var args = new LinearClassificationTrainer.Arguments();
-            var initPredictor = new LinearClassificationTrainer(Env, args, "Features", "Label").Fit(transformedData);
+            var initPredictor = ML.BinaryClassification.Trainers.SdcaLogisticRegression().Fit(transformedData);
             var data = initPredictor.Transform(transformedData);
 
-            var withInitPredictor = new SymSgdClassificationTrainer(Env, "Features", "Label").Train(transformedData, initialPredictor: initPredictor.Model);
+            var withInitPredictor = new SymbolicSgdLogisticRegressionBinaryTrainer(Env, new SymbolicSgdLogisticRegressionBinaryTrainer.Options()).Fit(transformedData,
+                modelParameters: initPredictor.Model.SubModel);
             var outInitData = withInitPredictor.Transform(transformedData);
 
-            var notInitPredictor = new SymSgdClassificationTrainer(Env, "Features", "Label").Train(transformedData);
+            var notInitPredictor = new SymbolicSgdLogisticRegressionBinaryTrainer(Env, new SymbolicSgdLogisticRegressionBinaryTrainer.Options()).Fit(transformedData);
             var outNoInitData = notInitPredictor.Transform(transformedData);
 
             int numExamples = 10;
-            var col1 = data.GetColumn<float>(Env, "Score").Take(numExamples).ToArray();
-            var col2 = outInitData.GetColumn<float>(Env, "Score").Take(numExamples).ToArray();
-            var col3 = outNoInitData.GetColumn<float>(Env, "Score").Take(numExamples).ToArray();
+            var col1 = data.GetColumn<float>(data.Schema["Score"]).Take(numExamples).ToArray();
+            var col2 = outInitData.GetColumn<float>(outInitData.Schema["Score"]).Take(numExamples).ToArray();
+            var col3 = outNoInitData.GetColumn<float>(outNoInitData.Schema["Score"]).Take(numExamples).ToArray();
 
             bool col12Diff = default;
             bool col23Diff = default;

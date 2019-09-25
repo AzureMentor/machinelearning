@@ -2,15 +2,13 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using BenchmarkDotNet.Extensions;
+using System;
+using System.IO;
+using System.Linq;
 using BenchmarkDotNet.Loggers;
 using BenchmarkDotNet.Running;
 using BenchmarkDotNet.Toolchains;
 using BenchmarkDotNet.Toolchains.CsProj;
-using System;
-using System.IO;
-using System.Linq;
-using System.Text;
 
 namespace Microsoft.ML.Benchmarks.Harness
 {
@@ -27,8 +25,13 @@ namespace Microsoft.ML.Benchmarks.Harness
     /// </summary>
     public class ProjectGenerator : CsProjGenerator
     {
-        public ProjectGenerator(string targetFrameworkMoniker) : base(targetFrameworkMoniker, platform => platform.ToConfig(), null)
+        private readonly string runtimeIdentifier = string.Empty;
+
+        public ProjectGenerator(string targetFrameworkMoniker) : base(targetFrameworkMoniker, null, null, null)
         {
+#if NETFRAMEWORK
+            runtimeIdentifier = "win-x64";
+#endif
         }
 
         protected override void GenerateProject(BuildPartition buildPartition, ArtifactsPaths artifactsPaths, ILogger logger)
@@ -38,6 +41,7 @@ namespace Microsoft.ML.Benchmarks.Harness
     <OutputType>Exe</OutputType>
     <OutputPath>bin\{buildPartition.BuildConfiguration}</OutputPath>
     <TargetFramework>{TargetFrameworkMoniker}</TargetFramework>
+    <RuntimeIdentifier>{runtimeIdentifier}</RuntimeIdentifier>
     <AssemblyName>{artifactsPaths.ProgramName}</AssemblyName>
     <AssemblyTitle>{artifactsPaths.ProgramName}</AssemblyTitle>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
@@ -54,6 +58,10 @@ namespace Microsoft.ML.Benchmarks.Harness
     {GenerateNativeReferences(buildPartition, logger)}
   </ItemGroup>
 </Project>");
+
+        // This overrides the .exe path to also involve the runtimeIdentifier for .NET Framework
+        protected override string GetBinariesDirectoryPath(string buildArtifactsDirectoryPath, string configuration) 
+            => Path.Combine(buildArtifactsDirectoryPath, "bin", configuration, TargetFrameworkMoniker, runtimeIdentifier);
 
         private string GenerateNativeReferences(BuildPartition buildPartition, ILogger logger)
         {

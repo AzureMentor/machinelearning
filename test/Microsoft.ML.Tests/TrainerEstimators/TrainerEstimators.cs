@@ -2,12 +2,11 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Microsoft.ML.Core.Data;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.KMeans;
-using Microsoft.ML.Runtime.Learners;
-using Microsoft.ML.Runtime.PCA;
-using Microsoft.ML.Runtime.RunTests;
+using Microsoft.ML.Data;
+using Microsoft.ML.RunTests;
+using Microsoft.ML.Trainers;
+using Microsoft.ML.Transforms;
+using Microsoft.ML.Transforms.Text;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -27,20 +26,21 @@ namespace Microsoft.ML.Tests.TrainerEstimators
         {
             string featureColumn = "NumericFeatures";
 
-            var reader = new TextLoader(Env, new TextLoader.Arguments()
+            var reader = new TextLoader(Env, new TextLoader.Options()
             {
                 HasHeader = true,
                 Separator = "\t",
-                Column = new[]
+                Columns = new[]
                 {
-                    new TextLoader.Column(featureColumn, DataKind.R4, new [] { new TextLoader.Range(1, 784) })
-                }
+                    new TextLoader.Column(featureColumn, DataKind.Single, new [] { new TextLoader.Range(1, 784) })
+                },
+                AllowSparse = true
             });
-            var data = reader.Read(new MultiFileSource(GetDataPath(TestDatasets.mnistOneClass.trainFilename)));
+            var data = reader.Load(GetDataPath(TestDatasets.mnistOneClass.trainFilename));
 
 
             // Pipeline.
-            var pipeline = new RandomizedPcaTrainer(Env, featureColumn, rank:10);
+            var pipeline = new RandomizedPcaTrainer(Env, featureColumn, rank: 10);
 
             TestEstimatorCore(pipeline, data);
             Done();
@@ -55,67 +55,159 @@ namespace Microsoft.ML.Tests.TrainerEstimators
             string featureColumn = "NumericFeatures";
             string weights = "Weights";
 
-            var reader = new TextLoader(Env, new TextLoader.Arguments
+            var reader = new TextLoader(Env, new TextLoader.Options
             {
                 HasHeader = true,
                 Separator = "\t",
-                Column = new[]
+                Columns = new[]
                 {
-                    new TextLoader.Column(featureColumn, DataKind.R4, new [] { new TextLoader.Range(1, 784) }),
-                    new TextLoader.Column(weights, DataKind.R4, 0)
-                }
+                    new TextLoader.Column(featureColumn, DataKind.Single, new [] { new TextLoader.Range(1, 784) }),
+                    new TextLoader.Column(weights, DataKind.Single, 0),
+                },
+                AllowSparse = true
             });
-            var data = reader.Read(new MultiFileSource(GetDataPath(TestDatasets.mnistTiny28.trainFilename)));
+            var data = reader.Load(GetDataPath(TestDatasets.mnistTiny28.trainFilename));
 
 
             // Pipeline.
-            var pipeline = new KMeansPlusPlusTrainer(Env, featureColumn, weightColumn: weights,
-                            advancedSettings: s => { s.InitAlgorithm = KMeansPlusPlusTrainer.InitAlgorithm.KMeansParallel; });
+            var pipeline = new KMeansTrainer(Env, new KMeansTrainer.Options
+            {
+                FeatureColumnName = featureColumn,
+                ExampleWeightColumnName = weights,
+                InitializationAlgorithm = KMeansTrainer.InitializationAlgorithm.KMeansYinyang,
+            });
 
             TestEstimatorCore(pipeline, data);
 
             Done();
         }
 
+        /// <summary>
+        /// HogwildSGD TrainerEstimator test (logistic regression).
+        /// </summary>
+        [Fact]
+        public void TestEstimatorHogwildSGD()
+        {
+            var trainers = new[] { ML.BinaryClassification.Trainers.SgdCalibrated(l2Regularization: 0, numberOfIterations: 80),
+                ML.BinaryClassification.Trainers.SgdCalibrated(new Trainers.SgdCalibratedTrainer.Options(){ L2Regularization = 0, NumberOfIterations = 80})};
+
+            foreach (var trainer in trainers)
+            {
+                (IEstimator<ITransformer> pipe, IDataView dataView) = GetBinaryClassificationPipeline();
+
+                var pipeWithTrainer = pipe.AppendCacheCheckpoint(Env).Append(trainer);
+                TestEstimatorCore(pipeWithTrainer, dataView);
+
+                var transformedDataView = pipe.Fit(dataView).Transform(dataView);
+                var model = trainer.Fit(transformedDataView);
+                trainer.Fit(transformedDataView, model.Model.SubModel);
+                TestEstimatorCore(pipe, dataView);
+
+                var result = model.Transform(transformedDataView);
+                var metrics = ML.BinaryClassification.Evaluate(result);
+
+                Assert.InRange(metrics.Accuracy, 0.8, 1);
+                Assert.InRange(metrics.AreaUnderRocCurve, 0.9, 1);
+                Assert.InRange(metrics.LogLoss, 0, 0.6);
+            }
+
+            Done();
+        }
+
+        /// <summary>
+        /// HogwildSGD TrainerEstimator test (support vector machine)
+        /// </summary>
+        [Fact]
+        public void TestEstimatorHogwildSGDNonCalibrated()
+        {
+            var trainers = new[] { ML.BinaryClassification.Trainers.SgdNonCalibrated(lossFunction : new SmoothedHingeLoss()),
+                ML.BinaryClassification.Trainers.SgdNonCalibrated(new Trainers.SgdNonCalibratedTrainer.Options() { LossFunction = new HingeLoss() }) };
+
+            foreach (var trainer in trainers)
+            {
+                (IEstimator<ITransformer> pipe, IDataView dataView) = GetBinaryClassificationPipeline();
+                var pipeWithTrainer = pipe.AppendCacheCheckpoint(Env).Append(trainer);
+                TestEstimatorCore(pipeWithTrainer, dataView);
+
+                var transformedDataView = pipe.Fit(dataView).Transform(dataView);
+                var model = trainer.Fit(transformedDataView);
+                trainer.Fit(transformedDataView, model.Model);
+                TestEstimatorCore(pipe, dataView);
+
+                var result = model.Transform(transformedDataView);
+                var metrics = ML.BinaryClassification.EvaluateNonCalibrated(result);
+
+                Assert.InRange(metrics.Accuracy, 0.7, 1);
+                Assert.InRange(metrics.AreaUnderRocCurve, 0.9, 1);
+            }
+
+            Done();
+        }
+
+        /// <summary>
+        /// MulticlassNaiveBayes TrainerEstimator test 
+        /// </summary>
+        [Fact]
+        public void TestEstimatorMulticlassNaiveBayesTrainer()
+        {
+            (IEstimator<ITransformer> pipe, IDataView dataView) = GetMulticlassPipeline();
+            pipe = pipe.Append(ML.MulticlassClassification.Trainers.NaiveBayes("Label", "Features"));
+            TestEstimatorCore(pipe, dataView);
+            Done();
+        }
+
         private (IEstimator<ITransformer>, IDataView) GetBinaryClassificationPipeline()
         {
             var data = new TextLoader(Env,
-                    new TextLoader.Arguments()
+                    new TextLoader.Options()
                     {
+                        AllowQuoting = true,
                         Separator = "\t",
                         HasHeader = true,
-                        Column = new[]
+                        Columns = new[]
                         {
-                            new TextLoader.Column("Label", DataKind.BL, 0),
-                            new TextLoader.Column("SentimentText", DataKind.Text, 1)
+                            new TextLoader.Column("Label", DataKind.Boolean, 0),
+                            new TextLoader.Column("SentimentText", DataKind.String, 1)
                         }
-                    }).Read(new MultiFileSource(GetDataPath(TestDatasets.Sentiment.trainFilename)));
+                    }).Load(GetDataPath(TestDatasets.Sentiment.trainFilename));
 
             // Pipeline.
-            var pipeline = new TextTransform(Env, "SentimentText", "Features");
+            var pipeline = new TextFeaturizingEstimator(Env, "Features", "SentimentText");
 
             return (pipeline, data);
+        }
+
+        /// <summary>
+        /// Same data as <see cref="GetBinaryClassificationPipeline"/>, but with additional
+        /// OneHotEncoding to obtain categorical splits in tree models.
+        /// </summary>
+        private (IEstimator<ITransformer>, IDataView) GetOneHotBinaryClassificationPipeline()
+        {
+            var (pipeline, data) = GetBinaryClassificationPipeline();
+            var oneHotPipeline = pipeline.Append(ML.Transforms.Categorical.OneHotEncoding("Features"));
+
+            return (oneHotPipeline, data);
         }
 
 
         private (IEstimator<ITransformer>, IDataView) GetRankingPipeline()
         {
-            var data = new TextLoader(Env, new TextLoader.Arguments
+            var data = new TextLoader(Env, new TextLoader.Options
             {
                 HasHeader = true,
                 Separator = "\t",
-                Column = new[]
+                Columns = new[]
                      {
-                        new TextLoader.Column("Label", DataKind.R4, 0),
-                        new TextLoader.Column("Workclass", DataKind.Text, 1),
-                        new TextLoader.Column("NumericFeatures", DataKind.R4, new [] { new TextLoader.Range(9, 14) })
+                        new TextLoader.Column("Label", DataKind.Single, 0),
+                        new TextLoader.Column("Workclass", DataKind.String, 1),
+                        new TextLoader.Column("NumericFeatures", DataKind.Single, new [] { new TextLoader.Range(9, 14) })
                     }
-            }).Read(new MultiFileSource(GetDataPath(TestDatasets.adultRanking.trainFilename)));
+            }).Load(GetDataPath(TestDatasets.adultRanking.trainFilename));
 
             // Pipeline.
-            var pipeline = new TermEstimator(Env, new[]{
-                                    new TermTransform.ColumnInfo("Workclass", "Group"),
-                                    new TermTransform.ColumnInfo("Label", "Label0") });
+            var pipeline = new ValueToKeyMappingEstimator(Env, new[]{
+                                    new ValueToKeyMappingEstimator.ColumnOptions("Group", "Workclass"),
+                                    new ValueToKeyMappingEstimator.ColumnOptions("Label0", "Label") });
 
             return (pipeline, data);
         }
@@ -123,48 +215,45 @@ namespace Microsoft.ML.Tests.TrainerEstimators
         private IDataView GetRegressionPipeline()
         {
             return new TextLoader(Env,
-                    new TextLoader.Arguments()
+                    new TextLoader.Options()
                     {
                         Separator = ";",
                         HasHeader = true,
-                        Column = new[]
+                        Columns = new[]
                         {
-                            new TextLoader.Column("Label", DataKind.R4, 11),
-                            new TextLoader.Column("Features", DataKind.R4, new [] { new TextLoader.Range(0, 10) } )
+                            new TextLoader.Column("Label", DataKind.Single, 11),
+                            new TextLoader.Column("Features", DataKind.Single, new [] { new TextLoader.Range(0, 10) } )
                         }
-                    }).Read(new MultiFileSource(GetDataPath(TestDatasets.generatedRegressionDatasetmacro.trainFilename)));
+                    }).Load(GetDataPath(TestDatasets.generatedRegressionDatasetmacro.trainFilename));
         }
 
-        private TextLoader.Arguments GetIrisLoaderArgs()
+        private TextLoader.Options GetIrisLoaderArgs()
         {
-            return new TextLoader.Arguments()
+            return new TextLoader.Options()
             {
                 Separator = "comma",
                 HasHeader = true,
-                Column = new[]
+                Columns = new[]
                         {
-                            new TextLoader.Column("Features", DataKind.R4, new [] { new TextLoader.Range(0, 3) }),
-                            new TextLoader.Column("Label", DataKind.Text, 4)
+                            new TextLoader.Column("Features", DataKind.Single, new [] { new TextLoader.Range(0, 3) }),
+                            new TextLoader.Column("Label", DataKind.String, 4)
                         }
             };
         }
 
-        private (IEstimator<ITransformer>, IDataView) GetMultiClassPipeline()
+        private (IEstimator<ITransformer>, IDataView) GetMulticlassPipeline()
         {
-
-            var data = new TextLoader(Env, new TextLoader.Arguments()
+            var data = new TextLoader(Env, new TextLoader.Options()
             {
                 Separator = "comma",
-                HasHeader = true,
-                Column = new[]
+                Columns = new[]
                         {
-                            new TextLoader.Column("Features", DataKind.R4, new [] { new TextLoader.Range(0, 3) }),
-                            new TextLoader.Column("Label", DataKind.Text, 4)
+                            new TextLoader.Column("Features", DataKind.Single, new [] { new TextLoader.Range(0, 3) }),
+                            new TextLoader.Column("Label", DataKind.String, 4)
                         }
-                })
-                .Read(new MultiFileSource(GetDataPath(IrisDataPath)));
+            }).Load(GetDataPath(IrisDataPath));
 
-            var pipeline = new TermEstimator(Env, "Label");
+            var pipeline = new ValueToKeyMappingEstimator(Env, "Label");
 
             return (pipeline, data);
         }

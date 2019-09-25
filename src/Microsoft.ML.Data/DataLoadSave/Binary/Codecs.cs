@@ -5,13 +5,13 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Runtime.Internal.Internallearn;
+using Microsoft.ML.Internal.Internallearn;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Runtime;
 
-namespace Microsoft.ML.Runtime.Data.IO
+namespace Microsoft.ML.Data.IO
 {
     internal sealed partial class CodecFactory
     {
@@ -45,15 +45,13 @@ namespace Microsoft.ML.Runtime.Data.IO
                 }
             }
 
-            public abstract void Write(ref T value);
+            public abstract void Write(in T value);
 
-            public virtual void Write(T[] values, int index, int count)
+            public virtual void Write(ReadOnlySpan<T> values)
             {
-                Contracts.Assert(0 <= index && index <= Utils.Size(values));
-                Contracts.Assert(0 <= count && count <= Utils.Size(values) - index);
                 // Basic un-optimized reference implementation.
-                for (int i = 0; i < count; ++i)
-                    Write(ref values[i + index]);
+                for (int i = 0; i < values.Length; ++i)
+                    Write(in values[i]);
             }
 
             public abstract void Commit();
@@ -115,12 +113,12 @@ namespace Microsoft.ML.Runtime.Data.IO
         {
             protected readonly CodecFactory Factory;
 
-            public ColumnType Type { get; }
+            public DataViewType Type { get; }
 
             // For these basic types, the class name will do perfectly well.
             public virtual string LoadName => typeof(T).Name;
 
-            public SimpleCodec(CodecFactory factory, ColumnType type)
+            public SimpleCodec(CodecFactory factory, DataViewType type)
             {
                 Contracts.AssertValue(factory);
                 Contracts.AssertValue(type);
@@ -157,32 +155,13 @@ namespace Microsoft.ML.Runtime.Data.IO
 
             private readonly UnsafeTypeOps<T> _ops;
 
-            public override string LoadName
-            {
-                get
-                {
-                    switch (Type.RawKind)
-                    {
-                    case DataKind.I1:
-                        return typeof(sbyte).Name;
-                    case DataKind.I2:
-                        return typeof(short).Name;
-                    case DataKind.I4:
-                        return typeof(int).Name;
-                    case DataKind.I8:
-                        return typeof(long).Name;
-                    case DataKind.TS:
-                        return typeof(TimeSpan).Name;
-                    }
-                    return base.LoadName;
-                }
-            }
-
             // Gatekeeper to ensure T is a type that is supported by UnsafeTypeCodec.
             // Throws an exception if T is neither a TimeSpan nor a NumberType.
-            private static ColumnType UnsafeColumnType(Type type)
+            private static DataViewType UnsafeColumnType(Type type)
             {
-                return type == typeof(TimeSpan) ? (ColumnType)TimeSpanType.Instance : NumberType.FromType(type);
+                return type == typeof(TimeSpan) ?  TimeSpanDataViewType.Instance :
+                    type == typeof(DataViewRowId) ? (DataViewType)RowIdDataViewType.Instance :
+                    ColumnTypeExtensions.NumberTypeFromType(type);
             }
 
             public UnsafeTypeCodec(CodecFactory factory)
@@ -214,23 +193,20 @@ namespace Microsoft.ML.Runtime.Data.IO
                     _ops = codec._ops;
                 }
 
-                public override void Write(ref T value)
+                public override void Write(in T value)
                 {
                     _ops.Write(value, Writer);
                     _numWritten++;
                 }
 
-                public override void Write(T[] values, int index, int count)
+                public override void Write(ReadOnlySpan<T> values)
                 {
-                    Contracts.Assert(0 <= index && index <= Utils.Size(values));
-                    Contracts.Assert(0 <= count && count <= Utils.Size(values) - index);
+                    int count = values.Length;
                     _ops.Apply(values, ptr =>
                     {
                         // REVIEW: In some future work we will want to avoid needless copies by
                         // seeing if this is a stream that can work over IntPtr writes or reads.
-                        int offset = index * _ops.Size;
                         int byteLength = count * _ops.Size;
-                        ptr += offset;
                         while (byteLength > 0)
                         {
                             int sublen = Math.Min(byteLength, _buffer.Length);
@@ -320,7 +296,7 @@ namespace Microsoft.ML.Runtime.Data.IO
             // string: The UTF-8 encoded string, with the standard LEB128 byte-length preceeding it.
 
             public TextCodec(CodecFactory factory)
-                : base(factory, TextType.Instance)
+                : base(factory, TextDataViewType.Instance)
             {
             }
 
@@ -346,7 +322,7 @@ namespace Microsoft.ML.Runtime.Data.IO
                     _boundaries = new List<int>();
                 }
 
-                public override void Write(ref ReadOnlyMemory<char> value)
+                public override void Write(in ReadOnlyMemory<char> value)
                 {
                     Contracts.Check(_builder != null, "writer was already committed");
                     _builder.AppendMemory(value);
@@ -430,7 +406,7 @@ namespace Microsoft.ML.Runtime.Data.IO
             // Packed bits.
 
             public BoolCodec(CodecFactory factory)
-                : base(factory, BoolType.Instance)
+                : base(factory, BooleanDataViewType.Instance)
             {
             }
 
@@ -456,7 +432,7 @@ namespace Microsoft.ML.Runtime.Data.IO
                 {
                 }
 
-                public override void Write(ref bool value)
+                public override void Write(in bool value)
                 {
                     Contracts.Assert(0 <= _currentIndex && _currentIndex < 8);
 
@@ -534,7 +510,7 @@ namespace Microsoft.ML.Runtime.Data.IO
             // Pack 16 values into 32 bits, with 00 for false, 01 for true and 10 for NA.
 
             public OldBoolCodec(CodecFactory factory)
-                : base(factory, BoolType.Instance)
+                : base(factory, BooleanDataViewType.Instance)
             {
             }
 
@@ -578,17 +554,17 @@ namespace Microsoft.ML.Runtime.Data.IO
                     Contracts.Assert(_currentSlot < 16);
                     switch (_currentBits & 0x3)
                     {
-                    case 0x0:
-                        value = false;
-                        break;
-                    case 0x1:
-                        value = true;
-                        break;
-                    case 0x2:
-                        value = false;
-                        break;
-                    default:
-                        throw Contracts.ExceptDecode("Invalid bit pattern in BoolCodec");
+                        case 0x0:
+                            value = false;
+                            break;
+                        case 0x1:
+                            value = true;
+                            break;
+                        case 0x2:
+                            value = false;
+                            break;
+                        default:
+                            throw Contracts.ExceptDecode("Invalid bit pattern in BoolCodec");
                     }
                 }
             }
@@ -597,7 +573,7 @@ namespace Microsoft.ML.Runtime.Data.IO
         private sealed class DateTimeCodec : SimpleCodec<DateTime>
         {
             public DateTimeCodec(CodecFactory factory)
-                : base(factory, DateTimeType.Instance)
+                : base(factory, DateTimeDataViewType.Instance)
             {
             }
 
@@ -620,7 +596,7 @@ namespace Microsoft.ML.Runtime.Data.IO
                 {
                 }
 
-                public override void Write(ref DateTime value)
+                public override void Write(in DateTime value)
                 {
                     Writer.Write(value.Ticks);
                     _numWritten++;
@@ -670,7 +646,7 @@ namespace Microsoft.ML.Runtime.Data.IO
             private readonly MadeObjectPool<short[]> _shortBufferPool;
 
             public DateTimeOffsetCodec(CodecFactory factory)
-                : base(factory, DateTimeOffsetType.Instance)
+                : base(factory, DateTimeOffsetDataViewType.Instance)
             {
                 _longBufferPool = new MadeObjectPool<long[]>(() => null);
                 _shortBufferPool = new MadeObjectPool<short[]>(() => null);
@@ -698,7 +674,7 @@ namespace Microsoft.ML.Runtime.Data.IO
                     _ticks = new List<long>();
                 }
 
-                public override void Write(ref DateTimeOffset value)
+                public override void Write(in DateTimeOffset value)
                 {
                     Contracts.Assert(_offsets != null, "writer was already committed");
 
@@ -797,7 +773,7 @@ namespace Microsoft.ML.Runtime.Data.IO
             // <Values>: The packed sequence of values for all the vbuffers, written using the inner value codec's scheme.
 
             private readonly CodecFactory _factory;
-            private readonly VectorType _type;
+            private readonly VectorDataViewType _type;
             // The codec for the internal elements.
             private readonly IValueCodec<T> _innerCodec;
             private readonly MadeObjectPool<T[]> _bufferPool;
@@ -805,9 +781,9 @@ namespace Microsoft.ML.Runtime.Data.IO
 
             public string LoadName { get { return "VBuffer"; } }
 
-            public ColumnType Type { get { return _type; } }
+            public DataViewType Type { get { return _type; } }
 
-            public VBufferCodec(CodecFactory factory, VectorType type, IValueCodec<T> innerCodec)
+            public VBufferCodec(CodecFactory factory, VectorDataViewType type, IValueCodec<T> innerCodec)
             {
                 Contracts.AssertValue(factory);
                 Contracts.AssertValue(type);
@@ -827,13 +803,13 @@ namespace Microsoft.ML.Runtime.Data.IO
             public int WriteParameterization(Stream stream)
             {
                 int total = _factory.WriteCodec(stream, _innerCodec);
-                int count = _type.DimCount;
+                int count = _type.Dimensions.Length;
                 total += sizeof(int) * (1 + count);
                 using (BinaryWriter writer = _factory.OpenBinaryWriter(stream))
                 {
                     writer.Write(count);
                     for (int i = 0; i < count; i++)
-                        writer.Write(_type.GetDim(i));
+                        writer.Write(_type.Dimensions[i]);
                 }
                 return total;
             }
@@ -863,7 +839,7 @@ namespace Microsoft.ML.Runtime.Data.IO
                 public Writer(VBufferCodec<T> codec, Stream stream)
                     : base(codec._factory, stream)
                 {
-                    _size = codec._type.VectorSize;
+                    _size = codec._type.Size;
                     _lengths = FixedLength ? null : new List<int>();
                     _counts = new List<int>();
                     _indices = new List<int>();
@@ -927,7 +903,7 @@ namespace Microsoft.ML.Runtime.Data.IO
                     return structureLength + _valueWriter.GetCommitLengthEstimate();
                 }
 
-                public override void Write(ref VBuffer<T> value)
+                public override void Write(in VBuffer<T> value)
                 {
                     Contracts.Check(_valuesStream != null, "writer already committed");
                     if (FixedLength)
@@ -939,18 +915,21 @@ namespace Microsoft.ML.Runtime.Data.IO
                         _lengths.Add(value.Length);
                     // REVIEW: In the non-fixed length case we can still check that the
                     // length is a multiple of the product of the non-zero tail sizes of the type.
+                    var valueValues = value.GetValues();
                     if (value.IsDense)
                     {
                         _counts.Add(-1);
-                        _valueWriter.Write(value.Values, 0, value.Length);
+                        _valueWriter.Write(valueValues);
                     }
                     else
                     {
-                        _counts.Add(value.Count);
-                        if (value.Count > 0)
+                        _counts.Add(valueValues.Length);
+                        if (valueValues.Length > 0)
                         {
-                            _indices.AddRange(value.Indices.Take(value.Count));
-                            _valueWriter.Write(value.Values, 0, value.Count);
+                            var valueIndices = value.GetIndices();
+                            for (int i = 0; i < valueIndices.Length; i++)
+                                _indices.Add(valueIndices[i]);
+                            _valueWriter.Write(valueValues);
                         }
                     }
                 }
@@ -1005,8 +984,8 @@ namespace Microsoft.ML.Runtime.Data.IO
 
                     // The length of all those vectors.
                     _size = Reader.ReadInt32();
-                    if (codec._type.IsKnownSizeVector)
-                        Contracts.CheckDecode(codec._type.VectorSize == _size);
+                    if (codec._type.IsKnownSize)
+                        Contracts.CheckDecode(codec._type.Size == _size);
                     else
                         Contracts.CheckDecode(_size >= 0);
                     if (!FixedLength)
@@ -1053,11 +1032,8 @@ namespace Microsoft.ML.Runtime.Data.IO
                     // Get a buffer.
                     var values = codec._bufferPool.Get();
                     Utils.EnsureSize(ref values, totalItems, false);
-                    if (totalItems > 0)
-                    {
-                        using (var reader = codec._innerCodec.OpenReader(stream, totalItems))
-                            reader.Read(values, 0, totalItems);
-                    }
+                    using (var reader = codec._innerCodec.OpenReader(stream, totalItems))
+                        reader.Read(values, 0, totalItems);
                     _values = values;
                     _vectorIndex = -1;
                 }
@@ -1111,29 +1087,29 @@ namespace Microsoft.ML.Runtime.Data.IO
                     int length = FixedLength ? _size : _lengths[_vectorIndex];
                     int count = _counts[_vectorIndex];
 
-                    int[] indices = value.Indices;
-                    T[] values = value.Values;
                     if (count < 0)
                     {
                         // dense
+                        var editor = VBufferEditor.Create(ref value, length);
                         if (length > 0)
                         {
-                            Utils.EnsureSize(ref values, length);
-                            Array.Copy(_values, _valuesOffset, values, 0, length);
+                            _values.AsSpan(_valuesOffset, length)
+                                .CopyTo(editor.Values);
                         }
-                        value = new VBuffer<T>(length, values, indices);
+                        value = editor.Commit();
                     }
                     else
                     {
                         // sparse
+                        var editor = VBufferEditor.Create(ref value, length, count);
                         if (count > 0)
                         {
-                            Utils.EnsureSize(ref values, count);
-                            Utils.EnsureSize(ref indices, count);
-                            Array.Copy(_values, _valuesOffset, values, 0, count);
-                            Array.Copy(_indices, _indicesOffset, indices, 0, count);
+                            _values.AsSpan(_valuesOffset, count)
+                                .CopyTo(editor.Values);
+                            _indices.AsSpan(_indicesOffset, count)
+                                .CopyTo(editor.Indices);
                         }
-                        value = new VBuffer<T>(length, count, values, indices);
+                        value = editor.Commit();
                     }
                 }
             }
@@ -1149,10 +1125,10 @@ namespace Microsoft.ML.Runtime.Data.IO
                 return false;
             }
             // From this internal codec, get the VBuffer type of the codec we will return.
-            var itemType = innerCodec.Type as PrimitiveType;
+            var itemType = innerCodec.Type as PrimitiveDataViewType;
             Contracts.CheckDecode(itemType != null);
             // Following the internal type definition is the dimensions.
-            VectorType type;
+            VectorDataViewType type;
             using (BinaryReader reader = OpenBinaryReader(definitionStream))
             {
                 var dims = reader.ReadIntArray();
@@ -1160,10 +1136,16 @@ namespace Microsoft.ML.Runtime.Data.IO
                 {
                     foreach (int d in dims)
                         Contracts.CheckDecode(d >= 0);
-                    type = new VectorType(itemType, dims);
+                    type = new VectorDataViewType(itemType, dims);
                 }
                 else
-                    type = new VectorType(itemType);
+                {
+                    // In prior times, in the case where the VectorType was of single rank, *and* of unknown length,
+                    // then the vector type would be considered to have a dimension count of 0, for some reason.
+                    // This can no longer occur, but in the case where we read an older file we have to account for
+                    // the fact that nothing may have been written.
+                    type = new VectorDataViewType(itemType);
+                }
             }
             // Next create the vbuffer codec.
             Type codecType = typeof(VBufferCodec<>).MakeGenericType(itemType.RawType);
@@ -1171,11 +1153,9 @@ namespace Microsoft.ML.Runtime.Data.IO
             return true;
         }
 
-        private bool GetVBufferCodec(ColumnType type, out IValueCodec codec)
+        private bool GetVBufferCodec(VectorDataViewType type, out IValueCodec codec)
         {
-            if (!type.IsVector)
-                throw Contracts.ExceptParam(nameof(type), "type must be a vector type");
-            ColumnType itemType = type.ItemType;
+            DataViewType itemType = type.ItemType;
             // First create the element codec.
             IValueCodec innerCodec;
             if (!TryGetCodec(itemType, out innerCodec))
@@ -1189,27 +1169,27 @@ namespace Microsoft.ML.Runtime.Data.IO
             return true;
         }
 
-        private sealed class KeyCodec<T> : IValueCodec<T>
+        private sealed class KeyCodecOld<T> : IValueCodec<T>
         {
             // *** Binary block format ***
             // Identical to UnsafeTypeCodec, packed bytes of little-endian values.
 
             private readonly CodecFactory _factory;
-            private readonly KeyType _type;
+            private readonly KeyDataViewType _type;
             // We rely on a more basic value codec to do the actual saving and loading.
             private readonly IValueCodec<T> _innerCodec;
 
             public string LoadName { get { return "Key"; } }
 
-            public ColumnType Type { get { return _type; } }
+            public DataViewType Type { get { return _type; } }
 
-            public KeyCodec(CodecFactory factory, KeyType type, IValueCodec<T> innerCodec)
+            public KeyCodecOld(CodecFactory factory, KeyDataViewType type, IValueCodec<T> innerCodec)
             {
                 Contracts.AssertValue(factory);
                 Contracts.AssertValue(type);
                 Contracts.AssertValue(innerCodec);
                 Contracts.Assert(type.RawType == typeof(T));
-                Contracts.Assert(innerCodec.Type.RawKind == type.RawKind);
+                Contracts.Assert(innerCodec.Type.RawType == type.RawType);
                 _factory = factory;
                 _type = type;
                 _innerCodec = innerCodec;
@@ -1220,18 +1200,111 @@ namespace Microsoft.ML.Runtime.Data.IO
                 int total = _factory.WriteCodec(stream, _innerCodec);
                 using (BinaryWriter writer = _factory.OpenBinaryWriter(stream))
                 {
-                    writer.WriteBoolByte(_type.Contiguous);
-                    total++;
-                    writer.Write(_type.Min);
-                    total += sizeof(ulong);
                     writer.Write(_type.Count);
-                    total += sizeof(int);
+                    total += sizeof(ulong);
                 }
                 return total;
             }
 
             // REVIEW: There is something a little bit troubling here. If someone, say,
-            // produces a column on KeyType(I4, 0, 4, true) and then returns 10 as a value in
+            // produces a column on KeyType(I4, 4) and then returns 10 as a value in
+            // that column, that's obviously a violation of the type, and lots of things
+            // downstream may complain, but it is a "valid" cursor in that it produces values
+            // and does not throw. So from that perspective of the codecs and their users being
+            // common and indifferent carriers, it's not clear tha these codecs should take on the
+            // responsibility for validating the input. On the *other* hand, if we know that we
+            // wrote valid data, when reading it back from a stream should we not take advantage
+            // of this, to validate the correctness of the decoding? On the other other hand, is
+            // validating the correctness for the decoding of things like streams any less urgent?
+
+            public IValueWriter<T> OpenWriter(Stream stream)
+            {
+                return _innerCodec.OpenWriter(stream);
+            }
+
+            public IValueReader<T> OpenReader(Stream stream, int items)
+            {
+                return _innerCodec.OpenReader(stream, items);
+            }
+        }
+
+        private bool GetKeyCodecOld(Stream definitionStream, out IValueCodec codec)
+        {
+            // The first value in the definition stream will be the internal codec.
+            IValueCodec innerCodec;
+            if (!TryReadCodec(definitionStream, out innerCodec))
+            {
+                codec = default;
+                return false;
+            }
+            // Construct the key type.
+            var itemType = innerCodec.Type as PrimitiveDataViewType;
+            Contracts.CheckDecode(itemType != null);
+            Contracts.CheckDecode(KeyDataViewType.IsValidDataType(itemType.RawType));
+            KeyDataViewType type;
+            using (BinaryReader reader = OpenBinaryReader(definitionStream))
+            {
+                bool contiguous = reader.ReadBoolByte();
+                ulong min = reader.ReadUInt64();
+                int count = reader.ReadInt32();
+
+                // Since we no longer support the notion of min != 0 or non contiguous values we throw in that case.
+                Contracts.CheckDecode(min == 0);
+                Contracts.CheckDecode(0 <= count);
+                Contracts.CheckDecode((ulong)count <= itemType.GetRawKind().ToMaxInt());
+                Contracts.CheckDecode(contiguous);
+
+                // Since we removed the notion of unknown cardinality (count == 0), we map to the maximum value.
+                if (count == 0)
+                    type = new KeyDataViewType(itemType.RawType, itemType.RawType.ToMaxInt());
+                else
+                    type = new KeyDataViewType(itemType.RawType, count);
+            }
+            // Next create the key codec.
+            Type codecType = typeof(KeyCodecOld<>).MakeGenericType(itemType.RawType);
+            codec = (IValueCodec)Activator.CreateInstance(codecType, this, type, innerCodec);
+            return true;
+        }
+
+        private sealed class KeyCodec<T> : IValueCodec<T>
+        {
+            // *** Binary block format ***
+            // Identical to UnsafeTypeCodec, packed bytes of little-endian values.
+
+            private readonly CodecFactory _factory;
+            private readonly KeyDataViewType _type;
+            // We rely on a more basic value codec to do the actual saving and loading.
+            private readonly IValueCodec<T> _innerCodec;
+
+            public string LoadName { get { return "Key2"; } }
+
+            public DataViewType Type { get { return _type; } }
+
+            public KeyCodec(CodecFactory factory, KeyDataViewType type, IValueCodec<T> innerCodec)
+            {
+                Contracts.AssertValue(factory);
+                Contracts.AssertValue(type);
+                Contracts.AssertValue(innerCodec);
+                Contracts.Assert(type.RawType == typeof(T));
+                Contracts.Assert(innerCodec.Type.RawType == type.RawType);
+                _factory = factory;
+                _type = type;
+                _innerCodec = innerCodec;
+            }
+
+            public int WriteParameterization(Stream stream)
+            {
+                int total = _factory.WriteCodec(stream, _innerCodec);
+                using (BinaryWriter writer = _factory.OpenBinaryWriter(stream))
+                {
+                    writer.Write(_type.Count);
+                    total += sizeof(ulong);
+                }
+                return total;
+            }
+
+            // REVIEW: There is something a little bit troubling here. If someone, say,
+            // produces a column on KeyType(I4, 4) and then returns 10 as a value in
             // that column, that's obviously a violation of the type, and lots of things
             // downstream may complain, but it is a "valid" cursor in that it produces values
             // and does not throw. So from that perspective of the codecs and their users being
@@ -1258,27 +1331,22 @@ namespace Microsoft.ML.Runtime.Data.IO
             IValueCodec innerCodec;
             if (!TryReadCodec(definitionStream, out innerCodec))
             {
-                codec = default(IValueCodec);
+                codec = default;
                 return false;
             }
             // Construct the key type.
-            var itemType = innerCodec.Type as PrimitiveType;
+            var itemType = innerCodec.Type as PrimitiveDataViewType;
             Contracts.CheckDecode(itemType != null);
-            Contracts.CheckDecode(KeyType.IsValidDataKind(itemType.RawKind));
-            KeyType type;
+            Contracts.CheckDecode(KeyDataViewType.IsValidDataType(itemType.RawType));
+            KeyDataViewType type;
             using (BinaryReader reader = OpenBinaryReader(definitionStream))
             {
-                bool contiguous = reader.ReadBoolByte();
-                ulong min = reader.ReadUInt64();
-                int count = reader.ReadInt32();
+                ulong count = reader.ReadUInt64();
 
-                Contracts.CheckDecode(min >= 0);
-                Contracts.CheckDecode(0 <= count);
-                Contracts.CheckDecode((ulong)count <= ulong.MaxValue - min);
-                Contracts.CheckDecode((ulong)count <= itemType.RawKind.ToMaxInt());
-                Contracts.CheckDecode(contiguous || count == 0);
+                Contracts.CheckDecode(0 < count);
+                Contracts.CheckDecode(count <= itemType.RawType.ToMaxInt());
 
-                type = new KeyType(itemType.RawKind, min, count, contiguous);
+                type = new KeyDataViewType(itemType.RawType, count);
             }
             // Next create the key codec.
             Type codecType = typeof(KeyCodec<>).MakeGenericType(itemType.RawType);
@@ -1286,15 +1354,15 @@ namespace Microsoft.ML.Runtime.Data.IO
             return true;
         }
 
-        private bool GetKeyCodec(ColumnType type, out IValueCodec codec)
+        private bool GetKeyCodec(DataViewType type, out IValueCodec codec)
         {
-            if (!type.IsKey)
+            if (!(type is KeyDataViewType))
                 throw Contracts.ExceptParam(nameof(type), "type must be a key type");
             // Create the internal codec the key codec will use to do the actual reading/writing.
             IValueCodec innerCodec;
-            if (!TryGetCodec(NumberType.FromKind(type.RawKind), out innerCodec))
+            if (!TryGetCodec(ColumnTypeExtensions.NumberTypeFromType(type.RawType), out innerCodec))
             {
-                codec = default(IValueCodec);
+                codec = default;
                 return false;
             }
             // Next create the key codec.

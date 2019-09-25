@@ -5,13 +5,14 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using Microsoft.ML.Runtime;
 
-namespace Microsoft.ML.Runtime.Ensemble.Selector.DiversityMeasure
+namespace Microsoft.ML.Trainers.Ensemble
 {
-    public abstract class BaseDisagreementDiversityMeasure<TOutput> : IDiversityMeasure<TOutput>
+    internal abstract class BaseDisagreementDiversityMeasure<TOutput> : IDiversityMeasure<TOutput>
     {
-        public List<ModelDiversityMetric<TOutput>> CalculateDiversityMeasure(IList<FeatureSubsetModel<IPredictorProducing<TOutput>>> models,
-            ConcurrentDictionary<FeatureSubsetModel<IPredictorProducing<TOutput>>, TOutput[]> predictions)
+        public List<ModelDiversityMetric<TOutput>> CalculateDiversityMeasure(IList<FeatureSubsetModel<TOutput>> models,
+            ConcurrentDictionary<FeatureSubsetModel<TOutput>, TOutput[]> predictions)
         {
             Contracts.Assert(models.Count > 1);
             Contracts.Assert(predictions.Count == models.Count);
@@ -27,7 +28,7 @@ namespace Microsoft.ML.Runtime.Ensemble.Selector.DiversityMeasure
                     var modelYOutputs = predictions[models[j]];
                     for (int k = 0; k < modelXOutputs.Length; k++)
                     {
-                        differencesCount += GetDifference(ref modelXOutputs[k], ref modelYOutputs[k]);
+                        differencesCount += GetDifference(in modelXOutputs[k], in modelYOutputs[k]);
                     }
                     diversityValues.Add(new ModelDiversityMetric<TOutput>()
                     {
@@ -40,6 +41,6 @@ namespace Microsoft.ML.Runtime.Ensemble.Selector.DiversityMeasure
             return diversityValues;
         }
 
-        protected abstract Single GetDifference(ref TOutput tOutput1, ref TOutput tOutput2);
+        protected abstract Single GetDifference(in TOutput tOutput1, in TOutput tOutput2);
     }
 }

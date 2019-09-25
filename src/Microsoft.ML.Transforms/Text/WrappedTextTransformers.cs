@@ -2,781 +2,383 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Runtime.TextAnalytics;
-using System;
-using System.Collections.Generic;
 using System.Linq;
-using System.Text;
-using static Microsoft.ML.Runtime.TextAnalytics.LdaTransform;
-using static Microsoft.ML.Runtime.TextAnalytics.StopWordsRemoverTransform;
-using static Microsoft.ML.Runtime.TextAnalytics.TextNormalizerTransform;
+using Microsoft.ML.Data;
+using Microsoft.ML.Data.DataLoadSave;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Runtime;
 
-namespace Microsoft.ML.Transforms
+namespace Microsoft.ML.Transforms.Text
 {
     /// <summary>
-    /// Word tokenizer splits text into tokens using the delimiter.
-    /// For each text input, the output column is a variable vector of text.
+    /// <see cref="IEstimator{TTransformer}"/> for the <see cref="ITransformer"/>.
     /// </summary>
-    public sealed class WordTokenizer : TrivialWrapperEstimator
-    {
-        /// <summary>
-        /// Tokenize incoming text in <paramref name="inputColumn"/> and output the tokens as <paramref name="outputColumn"/>.
-        /// </summary>
-        /// <param name="env">The environment.</param>
-        /// <param name="inputColumn">The column containing text to tokenize.</param>
-        /// <param name="outputColumn">The column containing output tokens. Null means <paramref name="inputColumn"/> is replaced.</param>
-        /// <param name="separators">The separators to use (comma separated).</param>
-        public WordTokenizer(IHostEnvironment env, string inputColumn, string outputColumn = null, string separators = "space")
-            : this(env, new[] { (inputColumn, outputColumn ?? inputColumn) }, separators)
-        {
-        }
-
-        /// <summary>
-        /// Tokenize incoming text in input columns and output the tokens as output columns.
-        /// </summary>
-        /// <param name="env">The environment.</param>
-        /// <param name="columns">Pairs of columns to run the tokenization on.</param>
-        /// <param name="separators">The separators to use (comma separated).</param>
-        public WordTokenizer(IHostEnvironment env, (string input, string output)[] columns, string separators = "space")
-            : base(Contracts.CheckRef(env, nameof(env)).Register(nameof(WordTokenizer)), MakeTransformer(env, columns, separators))
-        {
-        }
-
-        private static TransformWrapper MakeTransformer(IHostEnvironment env, (string input, string output)[] columns, string separators)
-        {
-            Contracts.AssertValue(env);
-            env.CheckNonEmpty(columns, nameof(columns));
-            foreach (var (input, output) in columns)
-            {
-                env.CheckValue(input, nameof(input));
-                env.CheckValue(output, nameof(input));
-            }
-
-            // Create arguments.
-            // REVIEW: enable multiple separators via something other than parsing strings.
-            var args = new DelimitedTokenizeTransform.Arguments
-            {
-                Column = columns.Select(x => new DelimitedTokenizeTransform.Column { Source = x.input, Name = x.output }).ToArray(),
-                TermSeparators = separators
-            };
-
-            // Create a valid instance of data.
-            var schema = new SimpleSchema(env, columns.Select(x => new KeyValuePair<string, ColumnType>(x.input, TextType.Instance)).ToArray());
-            var emptyData = new EmptyDataView(env, schema);
-
-            return new TransformWrapper(env, new DelimitedTokenizeTransform(env, args, emptyData));
-        }
-    }
-
-    /// <summary>
-    /// Character tokenizer splits text into sequences of characters using a sliding window.
-    /// </summary>
-    public sealed class CharacterTokenizer : TrivialWrapperEstimator
-    {
-        /// <summary>
-        /// Tokenize incoming text in <paramref name="inputColumn"/> and output the tokens as <paramref name="outputColumn"/>.
-        /// </summary>
-        /// <param name="env">The environment.</param>
-        /// <param name="inputColumn">The column containing text to tokenize.</param>
-        /// <param name="outputColumn">The column containing output tokens. Null means <paramref name="inputColumn"/> is replaced.</param>
-        /// <param name="useMarkerCharacters">Whether to use marker characters to separate words.</param>
-        public CharacterTokenizer(IHostEnvironment env, string inputColumn, string outputColumn = null, bool useMarkerCharacters = true)
-            : this (env, new[] { (inputColumn, outputColumn ?? inputColumn) }, useMarkerCharacters)
-        {
-        }
-
-        /// <summary>
-        /// Tokenize incoming text in input columns and output the tokens as output columns.
-        /// </summary>
-        /// <param name="env">The environment.</param>
-        /// <param name="columns">Pairs of columns to run the tokenization on.</param>
-        /// <param name="useMarkerCharacters">Whether to use marker characters to separate words.</param>
-        public CharacterTokenizer(IHostEnvironment env, (string input, string output)[] columns, bool useMarkerCharacters = true)
-            : base(Contracts.CheckRef(env, nameof(env)).Register(nameof(CharacterTokenizer)), MakeTransformer(env, columns, useMarkerCharacters))
-        {
-        }
-
-        private static TransformWrapper MakeTransformer(IHostEnvironment env, (string input, string output)[] columns, bool useMarkerChars)
-        {
-            Contracts.AssertValue(env);
-            env.CheckNonEmpty(columns, nameof(columns));
-            foreach (var (input, output) in columns)
-            {
-                env.CheckValue(input, nameof(input));
-                env.CheckValue(output, nameof(input));
-            }
-
-            // Create arguments.
-            var args = new CharTokenizeTransform.Arguments
-            {
-                Column = columns.Select(x => new CharTokenizeTransform.Column { Source = x.input, Name = x.output }).ToArray(),
-                UseMarkerChars = useMarkerChars
-            };
-
-            // Create a valid instance of data.
-            var schema = new SimpleSchema(env, columns.Select(x => new KeyValuePair<string, ColumnType>(x.input, TextType.Instance)).ToArray());
-            var emptyData = new EmptyDataView(env, schema);
-
-            return new TransformWrapper(env, new CharTokenizeTransform(env, args, emptyData));
-        }
-    }
-
-    /// <summary>
-    /// Stopword remover removes language-specific lists of stop words (most common words)
-    /// This is usually applied after tokenizing text, so it compares individual tokens
-    /// (case-insensitive comparison) to the stopwords.
-    /// </summary>
-    public sealed class StopwordRemover : TrivialWrapperEstimator
-    {
-        /// <summary>
-        /// Removes stop words from incoming token streams in <paramref name="inputColumn"/>
-        /// and outputs the token streams without stopwords as <paramref name="outputColumn"/>.
-        /// </summary>
-        /// <param name="env">The environment.</param>
-        /// <param name="inputColumn">The column containing text to remove stop words on.</param>
-        /// <param name="outputColumn">The column containing output text. Null means <paramref name="inputColumn"/> is replaced.</param>
-        /// <param name="language">Langauge of the input text column <paramref name="inputColumn"/>.</param>
-        public StopwordRemover(IHostEnvironment env, string inputColumn, string outputColumn = null, Language language = Language.English)
-            : this(env, new[] { (inputColumn, outputColumn ?? inputColumn) }, language)
-        {
-        }
-
-        /// <summary>
-        /// Removes stop words from incoming token streams in input columns
-        /// and outputs the token streams without stop words as output columns.
-        /// </summary>
-        /// <param name="env">The environment.</param>
-        /// <param name="columns">Pairs of columns to remove stop words on.</param>
-        /// <param name="language">Langauge of the input text columns <paramref name="columns"/>.</param>
-        public StopwordRemover(IHostEnvironment env, (string input, string output)[] columns, Language language = Language.English)
-            : base(Contracts.CheckRef(env, nameof(env)).Register(nameof(StopwordRemover)), MakeTransformer(env, columns, language))
-        {
-        }
-
-        private static TransformWrapper MakeTransformer(IHostEnvironment env, (string input, string output)[] columns, Language language)
-        {
-            Contracts.AssertValue(env);
-            env.CheckNonEmpty(columns, nameof(columns));
-            foreach (var (input, output) in columns)
-            {
-                env.CheckValue(input, nameof(input));
-                env.CheckValue(output, nameof(input));
-            }
-
-            // Create arguments.
-            var args = new StopWordsRemoverTransform.Arguments
-            {
-                Column = columns.Select(x => new StopWordsRemoverTransform.Column { Source = x.input, Name = x.output }).ToArray(),
-                Language = language
-            };
-
-            // Create a valid instance of data.
-            var schema = new SimpleSchema(env, columns.Select(x => new KeyValuePair<string, ColumnType>(x.input, new VectorType(TextType.Instance))).ToArray());
-            var emptyData = new EmptyDataView(env, schema);
-
-            return new TransformWrapper(env, new StopWordsRemoverTransform(env, args, emptyData));
-        }
-    }
-
-    /// <summary>
-    /// Text normalizer allows normalizing text by changing case (Upper/Lower case), removing diacritical marks, punctuation marks and/or numbers.
-    /// </summary>
-    public sealed class TextNormalizer : TrivialWrapperEstimator
-    {
-        /// <summary>
-        /// Normalizes incoming text in <paramref name="inputColumn"/> by changing case, removing diacritical marks, punctuation marks and/or numbers
-        /// and outputs new text as <paramref name="outputColumn"/>.
-        /// </summary>
-        /// <param name="env">The environment.</param>
-        /// <param name="inputColumn">The column containing text to normalize.</param>
-        /// <param name="outputColumn">The column containing output tokens. Null means <paramref name="inputColumn"/> is replaced.</param>
-        /// <param name="textCase">Casing text using the rules of the invariant culture.</param>
-        /// <param name="keepDiacritics">Whether to keep diacritical marks or remove them.</param>
-        /// <param name="keepPunctuations">Whether to keep punctuation marks or remove them.</param>
-        /// <param name="keepNumbers">Whether to keep numbers or remove them.</param>
-        public TextNormalizer(IHostEnvironment env,
-            string inputColumn,
-            string outputColumn = null,
-            CaseNormalizationMode textCase = CaseNormalizationMode.Lower,
-            bool keepDiacritics = false,
-            bool keepPunctuations = true,
-            bool keepNumbers = true)
-            : this(env, new[] { (inputColumn, outputColumn ?? inputColumn) }, textCase, keepDiacritics, keepPunctuations, keepNumbers)
-        {
-        }
-
-        /// <summary>
-        /// Normalizes incoming text in input columns by changing case, removing diacritical marks, punctuation marks and/or numbers
-        /// and outputs new text as output columns.
-        /// </summary>
-        /// <param name="env">The environment.</param>
-        /// <param name="columns">Pairs of columns to run the text normalization on.</param>
-        /// <param name="textCase">Casing text using the rules of the invariant culture.</param>
-        /// <param name="keepDiacritics">Whether to keep diacritical marks or remove them.</param>
-        /// <param name="keepPunctuations">Whether to keep punctuation marks or remove them.</param>
-        /// <param name="keepNumbers">Whether to keep numbers or remove them.</param>
-        public TextNormalizer(IHostEnvironment env,
-            (string input, string output)[] columns,
-            CaseNormalizationMode textCase = CaseNormalizationMode.Lower,
-            bool keepDiacritics = false,
-            bool keepPunctuations = true,
-            bool keepNumbers = true)
-            : base(Contracts.CheckRef(env, nameof(env)).Register(nameof(TextNormalizer)),
-                  MakeTransformer(env, columns, textCase, keepDiacritics, keepPunctuations, keepNumbers))
-        {
-        }
-
-        private static TransformWrapper MakeTransformer(IHostEnvironment env,
-            (string input, string output)[] columns,
-            CaseNormalizationMode textCase,
-            bool keepDiacritics,
-            bool keepPunctuations,
-            bool keepNumbers)
-        {
-            Contracts.AssertValue(env);
-            env.CheckNonEmpty(columns, nameof(columns));
-            foreach (var (input, output) in columns)
-            {
-                env.CheckValue(input, nameof(input));
-                env.CheckValue(output, nameof(input));
-            }
-
-            // Create arguments.
-            var args = new TextNormalizerTransform.Arguments
-            {
-                Column = columns.Select(x => new TextNormalizerTransform.Column { Source = x.input, Name = x.output }).ToArray(),
-                TextCase = textCase,
-                KeepDiacritics = keepDiacritics,
-                KeepPunctuations = keepPunctuations,
-                KeepNumbers = keepNumbers
-            };
-
-            // Create a valid instance of data.
-            var schema = new SimpleSchema(env, columns.Select(x => new KeyValuePair<string, ColumnType>(x.input, TextType.Instance)).ToArray());
-            var emptyData = new EmptyDataView(env, schema);
-
-            return new TransformWrapper(env, new TextNormalizerTransform(env, args, emptyData));
-        }
-    }
-
-    /// <summary>
-    /// Produces a bag of counts of ngrams (sequences of consecutive words) in a given text.
-    /// It does so by building a dictionary of ngrams and using the id in the dictionary as the index in the bag.
-    /// </summary>
-    public sealed class WordBagEstimator : TrainedWrapperEstimatorBase
-    {
-        private readonly (string[] inputs, string output)[] _columns;
-        private readonly int _ngramLength;
-        private readonly int _skipLength;
-        private readonly bool _allLengths;
-        private readonly int _maxNumTerms;
-        private readonly NgramTransform.WeightingCriteria _weighting;
-
-        /// <summary>
-        /// Produces a bag of counts of ngrams (sequences of consecutive words) in <paramref name="inputColumn"/>
-        /// and outputs bag of word vector as <paramref name="outputColumn"/>
-        /// </summary>
-        /// <param name="env">The environment.</param>
-        /// <param name="inputColumn">The column containing text to compute bag of word vector.</param>
-        /// <param name="outputColumn">The column containing bag of word vector. Null means <paramref name="inputColumn"/> is replaced.</param>
-        /// <param name="ngramLength">Ngram length.</param>
-        /// <param name="skipLength">Maximum number of tokens to skip when constructing an ngram.</param>
-        /// <param name="allLengths">Whether to include all ngram lengths up to <paramref name="ngramLength"/> or only <paramref name="ngramLength"/>.</param>
-        /// <param name="maxNumTerms">Maximum number of ngrams to store in the dictionary.</param>
-        /// <param name="weighting">Statistical measure used to evaluate how important a word is to a document in a corpus.</param>
-        public WordBagEstimator(IHostEnvironment env,
-            string inputColumn,
-            string outputColumn = null,
-            int ngramLength = 1,
-            int skipLength=0,
-            bool allLengths = true,
-            int maxNumTerms = 10000000,
-            NgramTransform.WeightingCriteria weighting = NgramTransform.WeightingCriteria.Tf)
-            : this(env, new[] { ( new[] { inputColumn }, outputColumn ?? inputColumn) }, ngramLength, skipLength, allLengths, maxNumTerms, weighting)
-        {
-        }
-
-        /// <summary>
-        /// Produces a bag of counts of ngrams (sequences of consecutive words) in <paramref name="inputColumns"/>
-        /// and outputs bag of word vector as <paramref name="outputColumn"/>
-        /// </summary>
-        /// <param name="env">The environment.</param>
-        /// <param name="inputColumns">The columns containing text to compute bag of word vector.</param>
-        /// <param name="outputColumn">The column containing output tokens.</param>
-        /// <param name="ngramLength">Ngram length.</param>
-        /// <param name="skipLength">Maximum number of tokens to skip when constructing an ngram.</param>
-        /// <param name="allLengths">Whether to include all ngram lengths up to <paramref name="ngramLength"/> or only <paramref name="ngramLength"/>.</param>
-        /// <param name="maxNumTerms">Maximum number of ngrams to store in the dictionary.</param>
-        /// <param name="weighting">Statistical measure used to evaluate how important a word is to a document in a corpus.</param>
-        public WordBagEstimator(IHostEnvironment env,
-            string[] inputColumns,
-            string outputColumn,
-            int ngramLength = 1,
-            int skipLength = 0,
-            bool allLengths = true,
-            int maxNumTerms = 10000000,
-            NgramTransform.WeightingCriteria weighting = NgramTransform.WeightingCriteria.Tf)
-            : this(env, new[] { (inputColumns, outputColumn) }, ngramLength, skipLength, allLengths, maxNumTerms, weighting)
-        {
-        }
-
-        /// <summary>
-        /// Produces a bag of counts of ngrams (sequences of consecutive words) in <paramref name="columns.inputs"/>
-        /// and outputs bag of word vector for each output in <paramref name="columns.output"/>
-        /// </summary>
-        /// <param name="env">The environment.</param>
-        /// <param name="columns">Pairs of columns to compute bag of word vector.</param>
-        /// <param name="ngramLength">Ngram length.</param>
-        /// <param name="skipLength">Maximum number of tokens to skip when constructing an ngram.</param>
-        /// <param name="allLengths">Whether to include all ngram lengths up to <paramref name="ngramLength"/> or only <paramref name="ngramLength"/>.</param>
-        /// <param name="maxNumTerms">Maximum number of ngrams to store in the dictionary.</param>
-        /// <param name="weighting">Statistical measure used to evaluate how important a word is to a document in a corpus.</param>
-        public WordBagEstimator(IHostEnvironment env,
-            (string[] inputs, string output)[] columns,
-            int ngramLength = 1,
-            int skipLength = 0,
-            bool allLengths = true,
-            int maxNumTerms = 10000000,
-            NgramTransform.WeightingCriteria weighting = NgramTransform.WeightingCriteria.Tf)
-            : base(Contracts.CheckRef(env, nameof(env)).Register(nameof(WordBagEstimator)))
-        {
-            foreach (var (input, output) in columns)
-            {
-                Host.CheckUserArg(Utils.Size(input) > 0, nameof(input));
-                Host.CheckValue(output, nameof(input));
-            }
-
-            _columns = columns;
-            _ngramLength = ngramLength;
-            _skipLength = skipLength;
-            _allLengths = allLengths;
-            _maxNumTerms = maxNumTerms;
-            _weighting = weighting;
-        }
-
-        public override TransformWrapper Fit(IDataView input)
-        {
-            // Create arguments.
-            var args = new WordBagTransform.Arguments
-            {
-                Column = _columns.Select(x => new WordBagTransform.Column { Source = x.inputs, Name = x.output }).ToArray(),
-                NgramLength = _ngramLength,
-                SkipLength = _skipLength,
-                AllLengths = _allLengths,
-                MaxNumTerms = new[] { _maxNumTerms },
-                Weighting = _weighting
-            };
-
-            return new TransformWrapper(Host, WordBagTransform.Create(Host, args, input));
-        }
-    }
-
-    /// <summary>
-    /// Produces a bag of counts of ngrams (sequences of consecutive words of length 1-n) in a given text.
-    /// It does so by hashing each ngram and using the hash value as the index in the bag.
-    /// </summary>
-    public sealed class WordHashBagEstimator : TrainedWrapperEstimatorBase
-    {
-        private readonly (string[] inputs, string output)[] _columns;
-        private readonly int _hashBits;
-        private readonly int _ngramLength;
-        private readonly int _skipLength;
-        private readonly bool _allLengths;
-        private readonly uint _seed;
-        private readonly bool _ordered;
-        private readonly int _invertHash;
-
-        /// <summary>
-        /// Produces a bag of counts of hashed ngrams in <paramref name="inputColumn"/>
-        /// and outputs bag of word vector as <paramref name="outputColumn"/>
-        /// </summary>
-        /// <param name="env">The environment.</param>
-        /// <param name="inputColumn">The column containing text to compute bag of word vector.</param>
-        /// <param name="outputColumn">The column containing bag of word vector. Null means <paramref name="inputColumn"/> is replaced.</param>
-        /// <param name="hashBits">Number of bits to hash into. Must be between 1 and 30, inclusive.</param>
-        /// <param name="ngramLength">Ngram length.</param>
-        /// <param name="skipLength">Maximum number of tokens to skip when constructing an ngram.</param>
-        /// <param name="allLengths">Whether to include all ngram lengths up to <paramref name="ngramLength"/> or only <paramref name="ngramLength"/>.</param>
-        /// <param name="seed">Hashing seed.</param>
-        /// <param name="ordered">Whether the position of each source column should be included in the hash (when there are multiple source columns).</param>
-        /// <param name="invertHash">Limit the number of keys used to generate the slot name to this many. 0 means no invert hashing, -1 means no limit.</param>
-        public WordHashBagEstimator(IHostEnvironment env,
-            string inputColumn,
-            string outputColumn = null,
-            int hashBits = 16,
-            int ngramLength = 1,
-            int skipLength = 0,
-            bool allLengths = true,
-            uint seed = 314489979,
-            bool ordered = true,
-            int invertHash = 0)
-            : this(env, new[] { (new[] { inputColumn }, outputColumn ?? inputColumn) }, hashBits, ngramLength, skipLength, allLengths, seed, ordered, invertHash)
-        {
-        }
-
-        /// <summary>
-        /// Produces a bag of counts of hashed ngrams in <paramref name="inputColumns"/>
-        /// and outputs bag of word vector as <paramref name="outputColumn"/>
-        /// </summary>
-        /// <param name="env">The environment.</param>
-        /// <param name="inputColumns">The columns containing text to compute bag of word vector.</param>
-        /// <param name="outputColumn">The column containing output tokens.</param>
-        /// <param name="hashBits">Number of bits to hash into. Must be between 1 and 30, inclusive.</param>
-        /// <param name="ngramLength">Ngram length.</param>
-        /// <param name="skipLength">Maximum number of tokens to skip when constructing an ngram.</param>
-        /// <param name="allLengths">Whether to include all ngram lengths up to <paramref name="ngramLength"/> or only <paramref name="ngramLength"/>.</param>
-        /// <param name="seed">Hashing seed.</param>
-        /// <param name="ordered">Whether the position of each source column should be included in the hash (when there are multiple source columns).</param>
-        /// <param name="invertHash">Limit the number of keys used to generate the slot name to this many. 0 means no invert hashing, -1 means no limit.</param>
-        public WordHashBagEstimator(IHostEnvironment env,
-            string[] inputColumns,
-            string outputColumn,
-            int hashBits = 16,
-            int ngramLength = 1,
-            int skipLength = 0,
-            bool allLengths = true,
-            uint seed = 314489979,
-            bool ordered = true,
-            int invertHash = 0)
-            : this(env, new[] { (inputColumns, outputColumn) }, hashBits, ngramLength, skipLength, allLengths, seed, ordered, invertHash)
-        {
-        }
-
-        /// <summary>
-        /// Produces a bag of counts of hashed ngrams in <paramref name="columns.inputs"/>
-        /// and outputs bag of word vector for each output in <paramref name="columns.output"/>
-        /// </summary>
-        /// <param name="env">The environment.</param>
-        /// <param name="columns">Pairs of columns to compute bag of word vector.</param>
-        /// <param name="hashBits">Number of bits to hash into. Must be between 1 and 30, inclusive.</param>
-        /// <param name="ngramLength">Ngram length.</param>
-        /// <param name="skipLength">Maximum number of tokens to skip when constructing an ngram.</param>
-        /// <param name="allLengths">Whether to include all ngram lengths up to <paramref name="ngramLength"/> or only <paramref name="ngramLength"/>.</param>
-        /// <param name="seed">Hashing seed.</param>
-        /// <param name="ordered">Whether the position of each source column should be included in the hash (when there are multiple source columns).</param>
-        /// <param name="invertHash">Limit the number of keys used to generate the slot name to this many. 0 means no invert hashing, -1 means no limit.</param>
-        public WordHashBagEstimator(IHostEnvironment env,
-            (string[] inputs, string output)[] columns,
-            int hashBits = 16,
-            int ngramLength = 1,
-            int skipLength = 0,
-            bool allLengths = true,
-            uint seed = 314489979,
-            bool ordered = true,
-            int invertHash = 0)
-            : base(Contracts.CheckRef(env, nameof(env)).Register(nameof(WordBagEstimator)))
-        {
-            foreach (var (input, output) in columns)
-            {
-                Host.CheckUserArg(Utils.Size(input) > 0, nameof(input));
-                Host.CheckValue(output, nameof(input));
-            }
-
-            _columns = columns;
-            _hashBits = hashBits;
-            _ngramLength = ngramLength;
-            _skipLength = skipLength;
-            _allLengths = allLengths;
-            _seed = seed;
-            _ordered = ordered;
-            _invertHash = invertHash;
-        }
-
-        public override TransformWrapper Fit(IDataView input)
-        {
-            // Create arguments.
-            var args = new WordHashBagTransform.Arguments
-            {
-                Column = _columns.Select(x => new WordHashBagTransform.Column { Source = x.inputs, Name = x.output }).ToArray(),
-                HashBits = _hashBits,
-                NgramLength = _ngramLength,
-                SkipLength = _skipLength,
-                AllLengths = _allLengths,
-                Seed = _seed,
-                Ordered = _ordered,
-                InvertHash = _invertHash
-            };
-
-            return new TransformWrapper(Host, WordHashBagTransform.Create(Host, args, input));
-        }
-    }
-
-    /// <summary>
-    /// Produces a bag of counts of ngrams(sequences of consecutive values of length 1-n) in a given vector of keys.
-    /// It does so by building a dictionary of ngrams and using the id in the dictionary as the index in the bag.
-    /// </summary>
-    public sealed class NgramEstimator : TrainedWrapperEstimatorBase
-    {
-        private readonly (string inputs, string output)[] _columns;
-        private readonly int _ngramLength;
-        private readonly int _skipLength;
-        private readonly bool _allLengths;
-        private readonly int _maxNumTerms;
-        private readonly NgramTransform.WeightingCriteria _weighting;
-
-        /// <summary>
-        /// Produces a bag of counts of ngrams (sequences of consecutive words) in <paramref name="inputColumn"/>
-        /// and outputs bag of word vector as <paramref name="outputColumn"/>
-        /// </summary>
-        /// <param name="env">The environment.</param>
-        /// <param name="inputColumn">The column containing text to compute bag of word vector.</param>
-        /// <param name="outputColumn">The column containing bag of word vector. Null means <paramref name="inputColumn"/> is replaced.</param>
-        /// <param name="ngramLength">Ngram length.</param>
-        /// <param name="skipLength">Maximum number of tokens to skip when constructing an ngram.</param>
-        /// <param name="allLengths">Whether to include all ngram lengths up to <paramref name="ngramLength"/> or only <paramref name="ngramLength"/>.</param>
-        /// <param name="maxNumTerms">Maximum number of ngrams to store in the dictionary.</param>
-        /// <param name="weighting">Statistical measure used to evaluate how important a word is to a document in a corpus.</param>
-        public NgramEstimator(IHostEnvironment env,
-            string inputColumn,
-            string outputColumn = null,
-            int ngramLength = 2,
-            int skipLength = 0,
-            bool allLengths = true,
-            int maxNumTerms = 10000000,
-            NgramTransform.WeightingCriteria weighting = NgramTransform.WeightingCriteria.Tf)
-            : this(env, new[] { ( inputColumn, outputColumn ?? inputColumn) }, ngramLength, skipLength, allLengths, maxNumTerms, weighting)
-        {
-        }
-
-        /// <summary>
-        /// Produces a bag of counts of ngrams (sequences of consecutive words) in <paramref name="columns.inputs"/>
-        /// and outputs bag of word vector for each output in <paramref name="columns.output"/>
-        /// </summary>
-        /// <param name="env">The environment.</param>
-        /// <param name="columns">Pairs of columns to compute bag of word vector.</param>
-        /// <param name="ngramLength">Ngram length.</param>
-        /// <param name="skipLength">Maximum number of tokens to skip when constructing an ngram.</param>
-        /// <param name="allLengths">Whether to include all ngram lengths up to <paramref name="ngramLength"/> or only <paramref name="ngramLength"/>.</param>
-        /// <param name="maxNumTerms">Maximum number of ngrams to store in the dictionary.</param>
-        /// <param name="weighting">Statistical measure used to evaluate how important a word is to a document in a corpus.</param>
-        public NgramEstimator(IHostEnvironment env,
-            (string inputs, string output)[] columns,
-            int ngramLength = 2,
-            int skipLength = 0,
-            bool allLengths = true,
-            int maxNumTerms = 10000000,
-            NgramTransform.WeightingCriteria weighting = NgramTransform.WeightingCriteria.Tf)
-            : base(Contracts.CheckRef(env, nameof(env)).Register(nameof(WordBagEstimator)))
-        {
-            foreach (var (input, output) in columns)
-            {
-                Host.CheckUserArg(Utils.Size(input) > 0, nameof(input));
-                Host.CheckValue(output, nameof(input));
-            }
-
-            _columns = columns;
-            _ngramLength = ngramLength;
-            _skipLength = skipLength;
-            _allLengths = allLengths;
-            _maxNumTerms = maxNumTerms;
-            _weighting = weighting;
-        }
-
-        public override TransformWrapper Fit(IDataView input)
-        {
-            // Create arguments.
-            var args = new NgramTransform.Arguments
-            {
-                Column = _columns.Select(x => new NgramTransform.Column { Source = x.inputs, Name = x.output }).ToArray(),
-                NgramLength = _ngramLength,
-                SkipLength = _skipLength,
-                AllLengths = _allLengths,
-                MaxNumTerms = new[] { _maxNumTerms },
-                Weighting = _weighting
-            };
-
-            return new TransformWrapper(Host, new NgramTransform(Host, args, input));
-        }
-    }
-
-    /// <summary>
-    /// Produces a bag of counts of ngrams (sequences of consecutive words of length 1-n) in a given text.
-    /// It does so by hashing each ngram and using the hash value as the index in the bag.
+    /// <remarks>
+    /// <format type="text/markdown"><![CDATA[
+    /// ###  Estimator Characteristics
+    /// |  |  |
+    /// | -- | -- |
+    /// | Does this estimator need to look at the data to train its parameters? | Yes |
+    /// | Input column data type | Vector of [Text](xref:Microsoft.ML.Data.TextDataViewType) |
+    /// | Output column data type | Vector of known-size of <xref:System.Single> |
     ///
-    /// <see cref="NgramHashEstimator"/> is different from <see cref="WordHashBagEstimator"/> in a way that <see cref="NgramHashEstimator"/>
-    /// takes tokenized text as input while <see cref="WordHashBagEstimator"/> tokenizes text internally.
-    /// </summary>
-    public sealed class NgramHashEstimator : TrainedWrapperEstimatorBase
+    /// The resulting <xref:Microsoft.ML.ITransformer> creates a new column, named as specified in the output column name parameters, and
+    /// produces a vector of n-gram counts (sequences of n consecutive words) from a given data.
+    /// It does so by building a dictionary of n-grams and using the id in the dictionary as the index in the bag.
+    ///
+    /// <xref:Microsoft.ML.Transforms.Text.WordBagEstimator> is different from <xref:Microsoft.ML.Transforms.Text.NgramExtractingEstimator>
+    /// in that the former takes tokenizes text internally while the latter takes tokenized text as input.
+    ///
+    /// Check the See Also section for links to usage examples.
+    /// ]]>
+    /// </format>
+    /// </remarks>
+    /// <seealso cref="TextCatalog.ProduceWordBags(TransformsCatalog.TextTransforms, string, string, int, int, bool, int, NgramExtractingEstimator.WeightingCriteria)" />
+    /// <seealso cref="TextCatalog.ProduceWordBags(TransformsCatalog.TextTransforms, string, string[], int, int, bool, int, NgramExtractingEstimator.WeightingCriteria)" />
+    public sealed class WordBagEstimator : IEstimator<ITransformer>
     {
-        private readonly (string[] inputs, string output)[] _columns;
-        private readonly int _hashBits;
+        private readonly IHost _host;
+        private readonly (string outputColumnName, string[] sourceColumnsNames)[] _columns;
         private readonly int _ngramLength;
         private readonly int _skipLength;
-        private readonly bool _allLengths;
-        private readonly uint _seed;
-        private readonly bool _ordered;
-        private readonly int _invertHash;
+        private readonly bool _useAllLengths;
+        private readonly int _maxNumTerms;
+        private readonly NgramExtractingEstimator.WeightingCriteria _weighting;
 
         /// <summary>
-        /// Produces a bag of counts of hashed ngrams in <paramref name="inputColumn"/>
-        /// and outputs ngram vector as <paramref name="outputColumn"/>
-        ///
-        /// <see cref="NgramHashEstimator"/> is different from <see cref="WordHashBagEstimator"/> in a way that <see cref="NgramHashEstimator"/>
-        /// takes tokenized text as input while <see cref="WordHashBagEstimator"/> tokenizes text internally.
+        /// Options for how the n-grams are extracted.
+        /// </summary>
+        public class Options
+        {
+            /// <summary>
+            /// Maximum n-gram length.
+            /// </summary>
+            public int NgramLength;
+
+            /// <summary>
+            /// Maximum number of tokens to skip when constructing an n-gram.
+            /// </summary>
+            public int SkipLength;
+
+            /// <summary>
+            /// Whether to store all n-gram lengths up to ngramLength, or only ngramLength.
+            /// </summary>
+            public bool UseAllLengths;
+
+            /// <summary>
+            /// The maximum number of grams to store in the dictionary, for each level of n-grams,
+            /// from 1 (in position 0) up to ngramLength (in position ngramLength-1)
+            /// </summary>
+            public int[] MaximumNgramsCount;
+
+            /// <summary>
+            /// The weighting criteria.
+            /// </summary>
+            public NgramExtractingEstimator.WeightingCriteria Weighting;
+
+            public Options()
+            {
+                NgramLength = 1;
+                SkipLength = NgramExtractingEstimator.Defaults.SkipLength;
+                UseAllLengths = NgramExtractingEstimator.Defaults.UseAllLengths;
+                MaximumNgramsCount = new int[] { NgramExtractingEstimator.Defaults.MaximumNgramsCount };
+                Weighting = NgramExtractingEstimator.Defaults.Weighting;
+            }
+        }
+
+        /// <summary>
+        /// Produces a bag of counts of n-grams (sequences of consecutive words) in <paramref name="inputColumnName"/>
+        /// and outputs bag of word vector as <paramref name="outputColumnName"/>
         /// </summary>
         /// <param name="env">The environment.</param>
-        /// <param name="inputColumn">The column containing text to compute bag of word vector.</param>
-        /// <param name="outputColumn">The column containing bag of word vector. Null means <paramref name="inputColumn"/> is replaced.</param>
-        /// <param name="hashBits">Number of bits to hash into. Must be between 1 and 30, inclusive.</param>
+        /// <param name="outputColumnName">Name of the column resulting from the transformation of <paramref name="inputColumnName"/>.</param>
+        /// <param name="inputColumnName">Name of the column to transform. If set to <see langword="null"/>, the value of the <paramref name="outputColumnName"/> will be used as source.</param>
         /// <param name="ngramLength">Ngram length.</param>
-        /// <param name="skipLength">Maximum number of tokens to skip when constructing an ngram.</param>
-        /// <param name="allLengths">Whether to include all ngram lengths up to <paramref name="ngramLength"/> or only <paramref name="ngramLength"/>.</param>
-        /// <param name="seed">Hashing seed.</param>
-        /// <param name="ordered">Whether the position of each source column should be included in the hash (when there are multiple source columns).</param>
-        /// <param name="invertHash">Limit the number of keys used to generate the slot name to this many. 0 means no invert hashing, -1 means no limit.</param>
-        public NgramHashEstimator(IHostEnvironment env,
-            string inputColumn,
-            string outputColumn = null,
-            int hashBits = 16,
-            int ngramLength = 2,
+        /// <param name="skipLength">Maximum number of tokens to skip when constructing an n-gram.</param>
+        /// <param name="useAllLengths">Whether to include all n-gram lengths up to <paramref name="ngramLength"/> or only <paramref name="ngramLength"/>.</param>
+        /// <param name="maximumNgramsCount">Maximum number of n-grams to store in the dictionary.</param>
+        /// <param name="weighting">Statistical measure used to evaluate how important a word is to a document in a corpus.</param>
+        internal WordBagEstimator(IHostEnvironment env,
+            string outputColumnName,
+            string inputColumnName = null,
+            int ngramLength = 1,
             int skipLength = 0,
-            bool allLengths = true,
-            uint seed = 314489979,
-            bool ordered = true,
-            int invertHash = 0)
-            : this(env, new[] { (new[] { inputColumn }, outputColumn ?? inputColumn) }, hashBits, ngramLength, skipLength, allLengths, seed, ordered, invertHash)
+            bool useAllLengths = true,
+            int maximumNgramsCount = 10000000,
+            NgramExtractingEstimator.WeightingCriteria weighting = NgramExtractingEstimator.WeightingCriteria.Tf)
+            : this(env, outputColumnName, new[] { inputColumnName ?? outputColumnName }, ngramLength, skipLength, useAllLengths, maximumNgramsCount, weighting)
         {
         }
 
         /// <summary>
-        /// Produces a bag of counts of hashed ngrams in <paramref name="inputColumns"/>
-        /// and outputs ngram vector as <paramref name="outputColumn"/>
-        ///
-        /// <see cref="NgramHashEstimator"/> is different from <see cref="WordHashBagEstimator"/> in a way that <see cref="NgramHashEstimator"/>
-        /// takes tokenized text as input while <see cref="WordHashBagEstimator"/> tokenizes text internally.
+        /// Produces a bag of counts of n-grams (sequences of consecutive words) in <paramref name="inputColumnNames"/>
+        /// and outputs bag of word vector as <paramref name="outputColumnName"/>
         /// </summary>
         /// <param name="env">The environment.</param>
-        /// <param name="inputColumns">The columns containing text to compute bag of word vector.</param>
-        /// <param name="outputColumn">The column containing output tokens.</param>
-        /// <param name="hashBits">Number of bits to hash into. Must be between 1 and 30, inclusive.</param>
+        /// <param name="outputColumnName">The column containing output tokens.</param>
+        /// <param name="inputColumnNames">The columns containing text to compute bag of word vector.</param>
         /// <param name="ngramLength">Ngram length.</param>
-        /// <param name="skipLength">Maximum number of tokens to skip when constructing an ngram.</param>
-        /// <param name="allLengths">Whether to include all ngram lengths up to <paramref name="ngramLength"/> or only <paramref name="ngramLength"/>.</param>
-        /// <param name="seed">Hashing seed.</param>
-        /// <param name="ordered">Whether the position of each source column should be included in the hash (when there are multiple source columns).</param>
-        /// <param name="invertHash">Limit the number of keys used to generate the slot name to this many. 0 means no invert hashing, -1 means no limit.</param>
-        public NgramHashEstimator(IHostEnvironment env,
-            string[] inputColumns,
-            string outputColumn,
-            int hashBits = 16,
-            int ngramLength = 2,
+        /// <param name="skipLength">Maximum number of tokens to skip when constructing an n-gram.</param>
+        /// <param name="useAllLengths">Whether to include all n-gram lengths up to <paramref name="ngramLength"/> or only <paramref name="ngramLength"/>.</param>
+        /// <param name="maximumNgramsCount">Maximum number of n-grams to store in the dictionary.</param>
+        /// <param name="weighting">Statistical measure used to evaluate how important a word is to a document in a corpus.</param>
+        internal WordBagEstimator(IHostEnvironment env,
+            string outputColumnName,
+            string[] inputColumnNames,
+            int ngramLength = 1,
             int skipLength = 0,
-            bool allLengths = true,
-            uint seed = 314489979,
-            bool ordered = true,
-            int invertHash = 0)
-            : this(env, new[] { (inputColumns, outputColumn) }, hashBits, ngramLength, skipLength, allLengths, seed, ordered, invertHash)
+            bool useAllLengths = true,
+            int maximumNgramsCount = 10000000,
+            NgramExtractingEstimator.WeightingCriteria weighting = NgramExtractingEstimator.WeightingCriteria.Tf)
+            : this(env, new[] { (outputColumnName, inputColumnNames) }, ngramLength, skipLength, useAllLengths, maximumNgramsCount, weighting)
         {
         }
 
         /// <summary>
-        /// Produces a bag of counts of hashed ngrams in <paramref name="columns.inputs"/>
-        /// and outputs ngram vector for each output in <paramref name="columns.output"/>
-        ///
-        /// <see cref="NgramHashEstimator"/> is different from <see cref="WordHashBagEstimator"/> in a way that <see cref="NgramHashEstimator"/>
-        /// takes tokenized text as input while <see cref="WordHashBagEstimator"/> tokenizes text internally.
+        /// Produces a bag of counts of n-grams (sequences of consecutive words) in <paramref name="columns.inputs"/>
+        /// and outputs bag of word vector for each output in <paramref name="columns.output"/>
         /// </summary>
         /// <param name="env">The environment.</param>
         /// <param name="columns">Pairs of columns to compute bag of word vector.</param>
-        /// <param name="hashBits">Number of bits to hash into. Must be between 1 and 30, inclusive.</param>
         /// <param name="ngramLength">Ngram length.</param>
-        /// <param name="skipLength">Maximum number of tokens to skip when constructing an ngram.</param>
-        /// <param name="allLengths">Whether to include all ngram lengths up to <paramref name="ngramLength"/> or only <paramref name="ngramLength"/>.</param>
-        /// <param name="seed">Hashing seed.</param>
-        /// <param name="ordered">Whether the position of each source column should be included in the hash (when there are multiple source columns).</param>
-        /// <param name="invertHash">Limit the number of keys used to generate the slot name to this many. 0 means no invert hashing, -1 means no limit.</param>
-        public NgramHashEstimator(IHostEnvironment env,
-            (string[] inputs, string output)[] columns,
-            int hashBits = 16,
-            int ngramLength = 2,
+        /// <param name="skipLength">Maximum number of tokens to skip when constructing an n-gram.</param>
+        /// <param name="useAllLengths">Whether to include all n-gram lengths up to <paramref name="ngramLength"/> or only <paramref name="ngramLength"/>.</param>
+        /// <param name="maximumNgramsCount">Maximum number of n-grams to store in the dictionary.</param>
+        /// <param name="weighting">Statistical measure used to evaluate how important a word is to a document in a corpus.</param>
+        internal WordBagEstimator(IHostEnvironment env,
+            (string outputColumnName, string[] inputColumnNames)[] columns,
+            int ngramLength = 1,
             int skipLength = 0,
-            bool allLengths = true,
-            uint seed = 314489979,
-            bool ordered = true,
-            int invertHash = 0)
-            : base(Contracts.CheckRef(env, nameof(env)).Register(nameof(WordBagEstimator)))
+            bool useAllLengths = true,
+            int maximumNgramsCount = 10000000,
+            NgramExtractingEstimator.WeightingCriteria weighting = NgramExtractingEstimator.WeightingCriteria.Tf)
         {
-            foreach (var (input, output) in columns)
+            Contracts.CheckValue(env, nameof(env));
+            _host = env.Register(nameof(WordBagEstimator));
+
+            foreach (var (outputColumnName, inputColumnName) in columns)
             {
-                Host.CheckUserArg(Utils.Size(input) > 0, nameof(input));
-                Host.CheckValue(output, nameof(input));
+                _host.CheckUserArg(Utils.Size(inputColumnName) > 0, nameof(columns));
+                _host.CheckValue(outputColumnName, nameof(columns));
             }
 
             _columns = columns;
-            _hashBits = hashBits;
             _ngramLength = ngramLength;
             _skipLength = skipLength;
-            _allLengths = allLengths;
-            _seed = seed;
-            _ordered = ordered;
-            _invertHash = invertHash;
+            _useAllLengths = useAllLengths;
+            _maxNumTerms = maximumNgramsCount;
+            _weighting = weighting;
         }
 
-        public override TransformWrapper Fit(IDataView input)
+        /// <summary> Trains and returns a <see cref="ITransformer"/>.</summary>
+        public ITransformer Fit(IDataView input)
         {
             // Create arguments.
-            var args = new NgramHashTransform.Arguments
+            var options = new WordBagBuildingTransformer.Options
             {
-                Column = _columns.Select(x => new NgramHashTransform.Column { Source = x.inputs, Name = x.output }).ToArray(),
-                HashBits = _hashBits,
+                Columns = _columns.Select(x => new WordBagBuildingTransformer.Column { Name = x.outputColumnName, Source = x.sourceColumnsNames }).ToArray(),
                 NgramLength = _ngramLength,
                 SkipLength = _skipLength,
-                AllLengths = _allLengths,
-                Seed = _seed,
-                Ordered = _ordered,
-                InvertHash = _invertHash
+                UseAllLengths = _useAllLengths,
+                MaxNumTerms = new[] { _maxNumTerms },
+                Weighting = _weighting
             };
 
-            return new TransformWrapper(Host, new NgramHashTransform(Host, args, input));
+            return WordBagBuildingTransformer.CreateTransfomer(_host, options, input);
+        }
+
+        /// <summary>
+        /// Schema propagation for estimators.
+        /// Returns the output schema shape of the estimator, if the input schema shape is like the one provided.
+        /// </summary>
+        public SchemaShape GetOutputSchema(SchemaShape inputSchema)
+        {
+            _host.CheckValue(inputSchema, nameof(inputSchema));
+
+            var fakeSchema = FakeSchemaFactory.Create(inputSchema);
+            var transformer = Fit(new EmptyDataView(_host, fakeSchema));
+            return SchemaShape.Create(transformer.GetOutputSchema(fakeSchema));
         }
     }
 
-    /// <include file='doc.xml' path='doc/members/member[@name="LightLDA"]/*' />
-    public sealed class LdaEstimator : TrainedWrapperEstimatorBase
+    /// <summary>
+    /// <see cref="IEstimator{TTransformer}"/> for the <see cref="ITransformer"/>.
+    /// </summary>
+    /// <remarks>
+    /// <format type="text/markdown"><![CDATA[
+    /// ###  Estimator Characteristics
+    /// |  |  |
+    /// | -- | -- |
+    /// | Does this estimator need to look at the data to train its parameters? | Yes |
+    /// | Input column data type | Vector of [Text](xref:Microsoft.ML.Data.TextDataViewType) |
+    /// | Output column data type | Vector of known-size of <xref:System.Single> |
+    ///
+    /// The resulting <xref:Microsoft.ML.ITransformer> creates a new column, named as specified in the output column name parameters, and
+    /// produces a vector of n-gram counts (sequences of n consecutive words) from a given data.
+    /// It does so by hashing each n-gram and using the hash value as the index in the bag.
+    ///
+    /// <xref:Microsoft.ML.Transforms.Text.WordHashBagEstimator> is different from <xref:Microsoft.ML.Transforms.Text.NgramHashingEstimator>
+    /// in that the former takes tokenizes text internally while the latter takes tokenized text as input.
+    ///
+    /// Check the See Also section for links to usage examples.
+    /// ]]>
+    /// </format>
+    /// </remarks>
+    /// <seealso cref="TextCatalog.ProduceHashedWordBags(TransformsCatalog.TextTransforms, string, string, int, int, int, bool, uint, bool, int)" />
+    /// <seealso cref="TextCatalog.ProduceHashedWordBags(TransformsCatalog.TextTransforms, string, string[], int, int, int, bool, uint, bool, int)" />
+    public sealed class WordHashBagEstimator : IEstimator<ITransformer>
     {
-        private readonly LdaTransform.Arguments _args;
+        private readonly IHost _host;
+        private readonly (string outputColumnName, string[] inputColumnNames)[] _columns;
+        private readonly int _numberOfBits;
+        private readonly int _ngramLength;
+        private readonly int _skipLength;
+        private readonly bool _useAllLengths;
+        private readonly uint _seed;
+        private readonly bool _ordered;
+        private readonly int _maximumNumberOfInverts;
 
-        /// <include file='doc.xml' path='doc/members/member[@name="LightLDA"]/*' />
+        /// <summary>
+        /// Produces a bag of counts of hashed n-grams in <paramref name="inputColumnName"/>
+        /// and outputs bag of word vector as <paramref name="outputColumnName"/>
+        /// </summary>
         /// <param name="env">The environment.</param>
-        /// <param name="inputColumn">The column containing text to tokenize.</param>
-        /// <param name="outputColumn">The column containing output tokens. Null means <paramref name="inputColumn"/> is replaced.</param>
-        /// <param name="numTopic">The number of topics in the LDA.</param>
-        /// <param name="advancedSettings">A delegate to apply all the advanced arguments to the algorithm.</param>
-        public LdaEstimator(IHostEnvironment env,
-            string inputColumn,
-            string outputColumn = null,
-            int numTopic = 100,
-            Action<LdaTransform.Arguments> advancedSettings = null)
-            : this(env, new[] { (inputColumn, outputColumn ?? inputColumn) },
-                    numTopic,
-                    advancedSettings)
+        /// <param name="outputColumnName">The column containing bag of word vector. Null means <paramref name="inputColumnName"/> is replaced.</param>
+        /// <param name="inputColumnName">The column containing text to compute bag of word vector.</param>
+        /// <param name="numberOfBits">Number of bits to hash into. Must be between 1 and 30, inclusive.</param>
+        /// <param name="ngramLength">Ngram length.</param>
+        /// <param name="skipLength">Maximum number of tokens to skip when constructing an n-gram.</param>
+        /// <param name="useAllLengths">Whether to include all n-gram lengths up to <paramref name="ngramLength"/> or only <paramref name="ngramLength"/>.</param>
+        /// <param name="seed">Hashing seed.</param>
+        /// <param name="useOrderedHashing">Whether the position of each source column should be included in the hash (when there are multiple source columns).</param>
+        /// <param name="maximumNumberOfInverts">During hashing we construct mappings between original values and the produced hash values.
+        /// Text representation of original values are stored in the slot names of the  annotations for the new column.Hashing, as such, can map many initial values to one.
+        /// <paramref name="maximumNumberOfInverts"/> specifies the upper bound of the number of distinct input values mapping to a hash that should be retained.
+        /// <value>0</value> does not retain any input values. <value>-1</value> retains all input values mapping to each hash.</param>
+        internal WordHashBagEstimator(IHostEnvironment env,
+            string outputColumnName,
+            string inputColumnName = null,
+            int numberOfBits = 16,
+            int ngramLength = 1,
+            int skipLength = 0,
+            bool useAllLengths = true,
+            uint seed = 314489979,
+            bool useOrderedHashing = true,
+            int maximumNumberOfInverts = 0)
+            : this(env, new[] { (outputColumnName, new[] { inputColumnName ?? outputColumnName }) }, numberOfBits: numberOfBits,
+                  ngramLength: ngramLength, skipLength: skipLength, useAllLengths: useAllLengths, seed: seed,
+                  useOrderedHashing: useOrderedHashing, maximumNumberOfInverts: maximumNumberOfInverts)
         {
         }
 
-        /// <include file='doc.xml' path='doc/members/member[@name="LightLDA"]/*' />
+        /// <summary>
+        /// Produces a bag of counts of hashed n-grams in <paramref name="inputColumnNames"/>
+        /// and outputs bag of word vector as <paramref name="outputColumnName"/>
+        /// </summary>
         /// <param name="env">The environment.</param>
-        /// <param name="columns">Pairs of columns to compute LDA.</param>
-        /// <param name="numTopic">The number of topics in the LDA.</param>
-        /// <param name="advancedSettings">A delegate to apply all the advanced arguments to the algorithm.</param>
-        public LdaEstimator(IHostEnvironment env,
-            (string input, string output)[] columns,
-            int numTopic = 100,
-            Action<LdaTransform.Arguments> advancedSettings = null)
-            : base(Contracts.CheckRef(env, nameof(env)).Register(nameof(LdaEstimator)))
+        /// <param name="outputColumnName">The column containing output tokens.</param>
+        /// <param name="inputColumnNames">The columns containing text to compute bag of word vector.</param>
+        /// <param name="numberOfBits">Number of bits to hash into. Must be between 1 and 30, inclusive.</param>
+        /// <param name="ngramLength">Ngram length.</param>
+        /// <param name="skipLength">Maximum number of tokens to skip when constructing an n-gram.</param>
+        /// <param name="useAllLengths">Whether to include all n-gram lengths up to <paramref name="ngramLength"/> or only <paramref name="ngramLength"/>.</param>
+        /// <param name="seed">Hashing seed.</param>
+        /// <param name="useOrderedHashing">Whether the position of each source column should be included in the hash (when there are multiple source columns).</param>
+        /// <param name="maximumNumberOfInverts">During hashing we constuct mappings between original values and the produced hash values.
+        /// Text representation of original values are stored in the slot names of the  metadata for the new column.Hashing, as such, can map many initial values to one.
+        /// <paramref name="maximumNumberOfInverts"/> specifies the upper bound of the number of distinct input values mapping to a hash that should be retained.
+        /// <value>0</value> does not retain any input values. <value>-1</value> retains all input values mapping to each hash.</param>
+        internal WordHashBagEstimator(IHostEnvironment env,
+            string outputColumnName,
+            string[] inputColumnNames,
+            int numberOfBits = 16,
+            int ngramLength = 1,
+            int skipLength = 0,
+            bool useAllLengths = true,
+            uint seed = 314489979,
+            bool useOrderedHashing = true,
+            int maximumNumberOfInverts = 0)
+            : this(env, new[] { (outputColumnName, inputColumnNames) }, numberOfBits: numberOfBits,
+                  ngramLength: ngramLength, skipLength: skipLength, useAllLengths: useAllLengths, seed: seed,
+                  useOrderedHashing: useOrderedHashing, maximumNumberOfInverts: maximumNumberOfInverts)
         {
-            _args = new LdaTransform.Arguments();
-            _args.Column = columns.Select(x => new LdaTransform.Column { Source = x.input, Name = x.output }).ToArray();
-            _args.NumTopic = numTopic;
-
-            advancedSettings?.Invoke(_args);
         }
 
-        public override TransformWrapper Fit(IDataView input)
+        /// <summary>
+        /// Produces a bag of counts of hashed n-grams in <paramref name="columns.inputs"/>
+        /// and outputs bag of word vector for each output in <paramref name="columns.output"/>
+        /// </summary>
+        /// <param name="env">The environment.</param>
+        /// <param name="columns">Pairs of columns to compute bag of word vector.</param>
+        /// <param name="numberOfBits">Number of bits to hash into. Must be between 1 and 30, inclusive.</param>
+        /// <param name="ngramLength">Ngram length.</param>
+        /// <param name="skipLength">Maximum number of tokens to skip when constructing an n-gram.</param>
+        /// <param name="useAllLengths">Whether to include all n-gram lengths up to <paramref name="ngramLength"/> or only <paramref name="ngramLength"/>.</param>
+        /// <param name="seed">Hashing seed.</param>
+        /// <param name="useOrderedHashing">Whether the position of each source column should be included in the hash (when there are multiple source columns).</param>
+        /// <param name="maximumNumberOfInverts">During hashing we constuct mappings between original values and the produced hash values.
+        /// Text representation of original values are stored in the slot names of the  metadata for the new column.Hashing, as such, can map many initial values to one.
+        /// <paramref name="maximumNumberOfInverts"/> specifies the upper bound of the number of distinct input values mapping to a hash that should be retained.
+        /// <value>0</value> does not retain any input values. <value>-1</value> retains all input values mapping to each hash.</param>
+        internal WordHashBagEstimator(IHostEnvironment env,
+            (string outputColumnName, string[] inputColumnNames)[] columns,
+            int numberOfBits = 16,
+            int ngramLength = 1,
+            int skipLength = 0,
+            bool useAllLengths = true,
+            uint seed = 314489979,
+            bool useOrderedHashing = true,
+            int maximumNumberOfInverts = 0)
         {
-            return new TransformWrapper(Host, new LdaTransform(Host, _args, input));
+            Contracts.CheckValue(env, nameof(env));
+            _host = env.Register(nameof(WordHashBagEstimator));
+
+            foreach (var (input, output) in columns)
+            {
+                _host.CheckUserArg(Utils.Size(input) > 0, nameof(input));
+                _host.CheckValue(output, nameof(input));
+            }
+
+            _columns = columns;
+            _numberOfBits = numberOfBits;
+            _ngramLength = ngramLength;
+            _skipLength = skipLength;
+            _useAllLengths = useAllLengths;
+            _seed = seed;
+            _ordered = useOrderedHashing;
+            _maximumNumberOfInverts = maximumNumberOfInverts;
+        }
+
+        /// <summary> Trains and returns a <see cref="ITransformer"/>.</summary>
+        public ITransformer Fit(IDataView input)
+        {
+            // Create arguments.
+            var options = new WordHashBagProducingTransformer.Options
+            {
+                Columns = _columns.Select(x => new WordHashBagProducingTransformer.Column { Name = x.outputColumnName, Source = x.inputColumnNames }).ToArray(),
+                NumberOfBits = _numberOfBits,
+                NgramLength = _ngramLength,
+                SkipLength = _skipLength,
+                UseAllLengths = _useAllLengths,
+                Seed = _seed,
+                Ordered = _ordered,
+                MaximumNumberOfInverts = _maximumNumberOfInverts
+            };
+
+            return WordHashBagProducingTransformer.CreateTransformer(_host, options, input);
+        }
+
+        /// <summary>
+        /// Schema propagation for estimators.
+        /// Returns the output schema shape of the estimator, if the input schema shape is like the one provided.
+        /// </summary>
+        public SchemaShape GetOutputSchema(SchemaShape inputSchema)
+        {
+            _host.CheckValue(inputSchema, nameof(inputSchema));
+
+            var fakeSchema = FakeSchemaFactory.Create(inputSchema);
+            var transformer = Fit(new EmptyDataView(_host, fakeSchema));
+            return SchemaShape.Create(transformer.GetOutputSchema(fakeSchema));
         }
     }
 }

@@ -7,10 +7,11 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.ML.Runtime;
 
-namespace Microsoft.ML.Runtime.FastTree.Internal
+namespace Microsoft.ML.Trainers.FastTree
 {
-    public sealed class TestResult : IComparable<TestResult>
+    internal sealed class TestResult : IComparable<TestResult>
     {
         public enum ValueOperator : int
         {
@@ -140,7 +141,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
         }
     }
 
-    public abstract class Test
+    internal abstract class Test
     {
         public ScoreTracker ScoreTracker;
         public Dataset Dataset => ScoreTracker.Dataset;
@@ -193,7 +194,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
     // A simple class that tracks history of underlying Test.
     // It captures an iteration that peak on a given metric
     // Each itaratin captures an array of LossFunctions computed by inderlying Test
-    public class TestHistory : Test
+    internal class TestHistory : Test
     {
         public readonly Test SimpleTest;
         public readonly int LossIndex;
@@ -254,7 +255,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
     // A class that tracks history of underlying Test.
     // Can capture an iteration that peak on a given metric
     // Each itaratin captures an array of LossFunctions computed by inderlying Test
-    public class TestWindowWithTolerance : TestHistory
+    internal class TestWindowWithTolerance : TestHistory
     {
         // Struct to keep information for tolerant early stopping
         private struct ValueIterationPair
@@ -334,7 +335,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
         }
     }
 
-    public class NdcgTest : Test
+    internal class NdcgTest : Test
     {
         protected readonly DcgCalculator DcgCalculator;
         private readonly string _sortingAlgorithm;
@@ -377,7 +378,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
         }
     }
 
-    public class FastNdcgTest : NdcgTest
+    internal class FastNdcgTest : NdcgTest
     {
         protected readonly int NdcgTruncation;
 
@@ -414,7 +415,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
         }
     }
 
-    public sealed class FastNdcgTestForTrainSet : FastNdcgTest
+    internal sealed class FastNdcgTestForTrainSet : FastNdcgTest
     {
         private readonly ScoreTracker _trainingScores;
         private readonly FastTreeRankingTrainer.LambdaRankObjectiveFunction _rankingObjectiveFunction;
@@ -457,7 +458,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
         }
     }
 
-    public sealed class WinLossSurplusTest : Test
+    internal sealed class WinLossSurplusTest : Test
     {
         private readonly Lazy<WinLossCalculator> _winLossCalculator;
 
@@ -513,7 +514,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
         }
     }
 
-    public sealed class RegressionTest : Test
+    internal sealed class RegressionTest : Test
     {
         private readonly float[] _labels;
         private readonly int? _resultType;
@@ -585,7 +586,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
         }
     }
 
-    public sealed class BinaryClassificationTest : Test
+    internal sealed class BinaryClassificationTest : Test
     {
         private readonly bool[] _binaryLabels;
         private readonly double _recipNpos;

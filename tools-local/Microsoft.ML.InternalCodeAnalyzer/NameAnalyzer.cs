@@ -14,11 +14,11 @@ namespace Microsoft.ML.InternalCodeAnalyzer
 {
     internal enum NameType
     {
-        UnderScoreCamelCased, // E.g., _myPrivateField
-        CamelCased,           // E.g., myAwesomeParameter
-        PascalCased,          // E.g., AwesomeClass
-        IPascalCased,         // E.g., IEnumerableStuff
-        TPascalCased,         // E.g., TDictArg
+        UnderScoreCamelCased, // For example, _myPrivateField
+        CamelCased,           // For example, myAwesomeParameter
+        PascalCased,          // For example, AwesomeClass
+        IPascalCased,         // For example, IEnumerableStuff
+        TPascalCased,         // For example, TDictArg
     }
 
     [DiagnosticAnalyzer(LanguageNames.CSharp)]
@@ -45,8 +45,8 @@ namespace Microsoft.ML.InternalCodeAnalyzer
         internal static class PrivateFieldName
         {
             public const string Id = "MSML_PrivateFieldName";
-            private const string Title = "Private field name not _camelCased";
-            private const string Format = "Private field name '{0}' not _camelCased";
+            private const string Title = "Private field name not in: _camelCase format";
+            private const string Format = "Private field name '{0}' not in: _camelCase format";
             private const string Description =
                 "Private fields should have an _ prefix and be _lowerCamelCased, unless they are const.";
 

@@ -5,30 +5,32 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using Microsoft.ML.Ensemble.EntryPoints;
+using Microsoft.ML;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Data;
+using Microsoft.ML.Internal.Internallearn;
 using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Ensemble;
-using Microsoft.ML.Runtime.Ensemble.OutputCombiners;
-using Microsoft.ML.Runtime.Ensemble.Selector;
-using Microsoft.ML.Runtime.EntryPoints;
-using Microsoft.ML.Runtime.Internal.Internallearn;
-using Microsoft.ML.Runtime.Learners;
+using Microsoft.ML.Trainers.Ensemble;
 
 [assembly: LoadableClass(EnsembleTrainer.Summary, typeof(EnsembleTrainer), typeof(EnsembleTrainer.Arguments),
     new[] { typeof(SignatureBinaryClassifierTrainer), typeof(SignatureTrainer) },
     EnsembleTrainer.UserNameValue, EnsembleTrainer.LoadNameValue, "pe", "ParallelEnsemble")]
 
-namespace Microsoft.ML.Runtime.Ensemble
+[assembly: LoadableClass(typeof(EnsembleTrainer), typeof(EnsembleTrainer.Arguments), typeof(SignatureModelCombiner),
+    "Binary Classification Ensemble Model Combiner", EnsembleTrainer.LoadNameValue, "pe", "ParallelEnsemble")]
+
+namespace Microsoft.ML.Trainers.Ensemble
 {
     using TDistPredictor = IDistPredictorProducing<Single, Single>;
     using TScalarPredictor = IPredictorProducing<Single>;
+    using TScalarTrainer = ITrainerEstimator<ISingleFeaturePredictionTransformer<IPredictorProducing<float>>, IPredictorProducing<float>>;
+
     /// <summary>
     /// A generic ensemble trainer for binary classification.
     /// </summary>
-    public sealed class EnsembleTrainer : EnsembleTrainerBase<Single, TScalarPredictor,
+    internal sealed class EnsembleTrainer : EnsembleTrainerBase<Single,
         IBinarySubModelSelector, IBinaryOutputCombiner>,
-        IModelCombiner<TScalarPredictor, TScalarPredictor>
+        IModelCombiner
     {
         public const string LoadNameValue = "WeightedEnsemble";
         public const string UserNameValue = "Parallel Ensemble (bagging, stacking, etc)";
@@ -45,17 +47,17 @@ namespace Microsoft.ML.Runtime.Ensemble
             [TGUI(Label = "Output combiner", Description = "Output combiner type")]
             public ISupportBinaryOutputCombinerFactory OutputCombiner = new MedianFactory();
 
+            // REVIEW: If we make this public again it should be an *estimator* of this type of predictor, rather than the (deprecated) ITrainer.
             [Argument(ArgumentType.Multiple, HelpText = "Base predictor type", ShortName = "bp,basePredictorTypes", SortOrder = 1, Visibility = ArgumentAttribute.VisibilityType.CmdLineOnly, SignatureType = typeof(SignatureBinaryClassifierTrainer))]
-            public IComponentFactory<ITrainer<TScalarPredictor>>[] BasePredictors;
+            public IComponentFactory<TScalarTrainer>[] BasePredictors;
 
-            internal override IComponentFactory<ITrainer<TScalarPredictor>>[] GetPredictorFactories() => BasePredictors;
+            internal override IComponentFactory<TScalarTrainer>[] GetPredictorFactories() => BasePredictors;
 
             public Arguments()
             {
                 BasePredictors = new[]
                 {
-                    ComponentFactoryUtils.CreateFromFunction(
-                        env => new LinearSvm(env, new LinearSvm.Arguments()))
+                    ComponentFactoryUtils.CreateFromFunction(env => new LinearSvmTrainer(env, LabelColumnName, FeatureColumnName))
                 };
             }
         }
@@ -70,27 +72,37 @@ namespace Microsoft.ML.Runtime.Ensemble
             Combiner = args.OutputCombiner.CreateComponent(Host);
         }
 
-        public override PredictionKind PredictionKind => PredictionKind.BinaryClassification;
-
-        private protected override TScalarPredictor CreatePredictor(List<FeatureSubsetModel<TScalarPredictor>> models)
+        private EnsembleTrainer(IHostEnvironment env, Arguments args, PredictionKind predictionKind)
+            : this(env, args)
         {
-            if (models.All(m => m.Predictor is TDistPredictor))
-                return new EnsembleDistributionPredictor(Host, PredictionKind, CreateModels<TDistPredictor>(models), Combiner);
-            return new EnsemblePredictor(Host, PredictionKind, CreateModels<TScalarPredictor>(models), Combiner);
+            Host.CheckParam(predictionKind == PredictionKind.BinaryClassification, nameof(PredictionKind));
         }
 
-        public TScalarPredictor CombineModels(IEnumerable<TScalarPredictor> models)
+        private protected override PredictionKind PredictionKind => PredictionKind.BinaryClassification;
+
+        private protected override IPredictor CreatePredictor(List<FeatureSubsetModel<float>> models)
         {
+            if (models.All(m => m.Predictor is TDistPredictor))
+                return new EnsembleDistributionModelParameters(Host, PredictionKind, CreateModels<TDistPredictor>(models), Combiner);
+            return new EnsembleModelParameters(Host, PredictionKind, CreateModels<TScalarPredictor>(models), Combiner);
+        }
+
+        public IPredictor CombineModels(IEnumerable<IPredictor> models)
+        {
+            Host.CheckValue(models, nameof(models));
+
             var combiner = _outputCombiner.CreateComponent(Host);
             var p = models.First();
-
             if (p is TDistPredictor)
             {
-                return new EnsembleDistributionPredictor(Host, p.PredictionKind,
-                    models.Select(k => new FeatureSubsetModel<TDistPredictor>((TDistPredictor)k)).ToArray(), combiner);
+                Host.CheckParam(models.All(m => m is TDistPredictor), nameof(models));
+                return new EnsembleDistributionModelParameters(Host, p.PredictionKind,
+                    models.Select(k => new FeatureSubsetModel<float>((TDistPredictor)k)).ToArray(), combiner);
             }
-            return new EnsemblePredictor(Host, p.PredictionKind,
-                    models.Select(k => new FeatureSubsetModel<TScalarPredictor>(k)).ToArray(), combiner);
+
+            Host.CheckParam(models.All(m => m is TScalarPredictor), nameof(models));
+            return new EnsembleModelParameters(Host, p.PredictionKind,
+                    models.Select(k => new FeatureSubsetModel<float>((TScalarPredictor)k)).ToArray(), combiner);
         }
     }
 }

@@ -5,23 +5,19 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using Microsoft.ML.Ensemble.EntryPoints;
+using Microsoft.ML;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.EntryPoints;
+using Microsoft.ML.Internal.Internallearn;
 using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Ensemble.Selector;
-using Microsoft.ML.Runtime.Ensemble.Selector.DiversityMeasure;
-using Microsoft.ML.Runtime.Ensemble.Selector.SubModelSelector;
-using Microsoft.ML.Runtime.EntryPoints;
-using Microsoft.ML.Runtime.Internal.Internallearn;
+using Microsoft.ML.Trainers.Ensemble;
 
 [assembly: LoadableClass(typeof(BestDiverseSelectorRegression), typeof(BestDiverseSelectorRegression.Arguments),
     typeof(SignatureEnsembleSubModelSelector), BestDiverseSelectorRegression.UserName, BestDiverseSelectorRegression.LoadName)]
 
-namespace Microsoft.ML.Runtime.Ensemble.Selector.SubModelSelector
+namespace Microsoft.ML.Trainers.Ensemble
 {
-    using TScalarPredictor = IPredictorProducing<Single>;
-
-    public sealed class BestDiverseSelectorRegression : BaseDiverseSelector<Single, RegressionDisagreementDiversityMeasure>, IRegressionSubModelSelector
+    internal sealed class BestDiverseSelectorRegression : BaseDiverseSelector<Single, RegressionDisagreementDiversityMeasure>, IRegressionSubModelSelector
     {
         public const string UserName = "Best Diverse Selector";
         public const string LoadName = "BestDiverseSelectorRegression";
@@ -40,8 +36,8 @@ namespace Microsoft.ML.Runtime.Ensemble.Selector.SubModelSelector
         {
         }
 
-        public override List<ModelDiversityMetric<Single>> CalculateDiversityMeasure(IList<FeatureSubsetModel<TScalarPredictor>> models,
-            ConcurrentDictionary<FeatureSubsetModel<TScalarPredictor>, Single[]> predictions)
+        public override List<ModelDiversityMetric<Single>> CalculateDiversityMeasure(IList<FeatureSubsetModel<float>> models,
+            ConcurrentDictionary<FeatureSubsetModel<float>, Single[]> predictions)
         {
             var diversityMetric = CreateDiversityMetric();
             return diversityMetric.CalculateDiversityMeasure(models, predictions);

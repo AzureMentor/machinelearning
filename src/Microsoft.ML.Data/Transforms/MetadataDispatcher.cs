@@ -5,17 +5,15 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Runtime.Model;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Runtime;
 
-namespace Microsoft.ML.Runtime.Data
+namespace Microsoft.ML.Data
 {
     /// <summary>
     /// Base class for handling the schema metadata API.
     /// </summary>
-    public abstract class MetadataDispatcherBase
+    internal abstract class MetadataDispatcherBase
     {
         private bool _sealed;
 
@@ -25,7 +23,7 @@ namespace Microsoft.ML.Runtime.Data
         protected sealed class ColInfo
         {
             // The source schema to pass through metadata from. May be null, indicating none.
-            public readonly ISchema SchemaSrc;
+            public readonly DataViewSchema SchemaSrc;
             // The source column index to pass through metadata from.
             public readonly int IndexSrc;
             // The metadata kind predicate indicating the kinds of metadata to pass through
@@ -46,7 +44,7 @@ namespace Microsoft.ML.Runtime.Data
                 }
             }
 
-            public ColInfo(ISchema schemaSrc, int indexSrc, Func<string, int, bool> filterSrc,
+            public ColInfo(DataViewSchema schemaSrc, int indexSrc, Func<string, int, bool> filterSrc,
                 IEnumerable<GetterInfo> getters = null)
             {
                 SchemaSrc = schemaSrc;
@@ -72,9 +70,9 @@ namespace Microsoft.ML.Runtime.Data
             // The metadata kind.
             public readonly string Kind;
             // The metadata type.
-            public readonly ColumnType Type;
+            public readonly DataViewType Type;
 
-            protected GetterInfo(string kind, ColumnType type)
+            protected GetterInfo(string kind, DataViewType type)
             {
                 Contracts.CheckNonWhiteSpace(kind, nameof(kind), "Invalid metadata kind");
                 Contracts.CheckValue(type, nameof(type));
@@ -88,7 +86,7 @@ namespace Microsoft.ML.Runtime.Data
         /// </summary>
         protected abstract class GetterInfo<TValue> : GetterInfo
         {
-            protected GetterInfo(string kind, ColumnType type)
+            protected GetterInfo(string kind, DataViewType type)
                 : base(kind, type)
             {
             }
@@ -101,9 +99,9 @@ namespace Microsoft.ML.Runtime.Data
         /// </summary>
         protected sealed class GetterInfoDelegate<TValue> : GetterInfo<TValue>
         {
-            public readonly MetadataUtils.MetadataGetter<TValue> Getter;
+            public readonly AnnotationUtils.AnnotationGetter<TValue> Getter;
 
-            public GetterInfoDelegate(string kind, ColumnType type, MetadataUtils.MetadataGetter<TValue> getter)
+            public GetterInfoDelegate(string kind, DataViewType type, AnnotationUtils.AnnotationGetter<TValue> getter)
                 : base(kind, type)
             {
                 Contracts.Check(type.RawType == typeof(TValue), "Incompatible types");
@@ -125,7 +123,7 @@ namespace Microsoft.ML.Runtime.Data
             // This is a MetadataGetter<TValue> where TValue is Type.RawType.
             public readonly TValue Value;
 
-            public GetterInfoPrimitive(string kind, ColumnType type, TValue value)
+            public GetterInfoPrimitive(string kind, DataViewType type, TValue value)
                 : base(kind, type)
             {
                 Contracts.Check(type.RawType == typeof(TValue), "Incompatible types");
@@ -157,11 +155,11 @@ namespace Microsoft.ML.Runtime.Data
         /// the same ColInfo, if desired. Simply call RegisterColumn multiple times, passing
         /// the same ColInfo but different index values. This can only be called before Seal is called.
         /// </summary>
-        protected ColInfo CreateInfo(ISchema schemaSrc = null, int indexSrc = -1,
+        protected ColInfo CreateInfo(DataViewSchema schemaSrc = null, int indexSrc = -1,
             Func<string, int, bool> filterSrc = null)
         {
             Contracts.Check(!_sealed, "MetadataDispatcher sealed");
-            Contracts.Check(schemaSrc == null || (0 <= indexSrc && indexSrc < schemaSrc.ColumnCount), "indexSrc out of range");
+            Contracts.Check(schemaSrc == null || (0 <= indexSrc && indexSrc < schemaSrc.Count), "indexSrc out of range");
             Contracts.Check(filterSrc == null || schemaSrc != null, "filterSrc should be null if schemaSrc is null");
             return new ColInfo(schemaSrc, indexSrc, filterSrc);
         }
@@ -203,17 +201,17 @@ namespace Microsoft.ML.Runtime.Data
         /// Gets the metadata kinds and types for the given column index.
         /// This can only be called after Seal is called.
         /// </summary>
-        public IEnumerable<KeyValuePair<string, ColumnType>> GetMetadataTypes(int index)
+        public IEnumerable<KeyValuePair<string, DataViewType>> GetMetadataTypes(int index)
         {
             Contracts.Check(_sealed, "MetadataDispatcher not sealed");
 
             var info = GetColInfoOrNull(index);
             if (info == null)
-                return Enumerable.Empty<KeyValuePair<string, ColumnType>>();
+                return Enumerable.Empty<KeyValuePair<string, DataViewType>>();
             return GetTypesCore(index, info);
         }
 
-        private IEnumerable<KeyValuePair<string, ColumnType>> GetTypesCore(int index, ColInfo info)
+        private IEnumerable<KeyValuePair<string, DataViewType>> GetTypesCore(int index, ColInfo info)
         {
             Contracts.Assert(_sealed);
             Contracts.AssertValue(info);
@@ -225,7 +223,7 @@ namespace Microsoft.ML.Runtime.Data
                     kinds = new HashSet<string>();
                 foreach (var g in info.Getters)
                 {
-                    yield return new KeyValuePair<string, ColumnType>(g.Kind, g.Type);
+                    yield return new KeyValuePair<string, DataViewType>(g.Kind, g.Type);
                     if (kinds != null)
                         kinds.Add(g.Kind);
                 }
@@ -235,7 +233,7 @@ namespace Microsoft.ML.Runtime.Data
                 yield break;
 
             // Pass through from base, with filtering.
-            foreach (var kvp in info.SchemaSrc.GetMetadataTypes(info.IndexSrc))
+            foreach (var kvp in info.SchemaSrc[info.IndexSrc].Annotations.Schema.Select(c => new KeyValuePair<string, DataViewType>(c.Name, c.Type)))
             {
                 if (kinds != null && kinds.Contains(kvp.Key))
                     continue;
@@ -249,7 +247,7 @@ namespace Microsoft.ML.Runtime.Data
         /// Gets the metadata type for the given metadata kind and column index, if there is one.
         /// This can only be called after Seal is called.
         /// </summary>
-        public ColumnType GetMetadataTypeOrNull(string kind, int index)
+        public DataViewType GetMetadataTypeOrNull(string kind, int index)
         {
             Contracts.Check(_sealed, "MetadataDispatcher not sealed");
 
@@ -267,7 +265,7 @@ namespace Microsoft.ML.Runtime.Data
                 return null;
             if (info.FilterSrc != null && !info.FilterSrc(kind, index))
                 return null;
-            return info.SchemaSrc.GetMetadataTypeOrNull(kind, info.IndexSrc);
+            return info.SchemaSrc[info.IndexSrc].Annotations.Schema.GetColumnOrNull(kind)?.Type;
         }
 
         /// <summary>
@@ -281,7 +279,7 @@ namespace Microsoft.ML.Runtime.Data
 
             var info = _infos[index];
             if (info == null)
-                throw ectx.ExceptGetMetadata();
+                throw ectx.ExceptGetAnnotation();
 
             foreach (var g in info.Getters)
             {
@@ -289,15 +287,15 @@ namespace Microsoft.ML.Runtime.Data
                 {
                     var getter = g as GetterInfo<TValue>;
                     if (getter == null)
-                        throw ectx.ExceptGetMetadata();
+                        throw ectx.ExceptGetAnnotation();
                     getter.Get(index, ref value);
                     return;
                 }
             }
 
             if (info.SchemaSrc == null || info.FilterSrc != null && !info.FilterSrc(kind, index))
-                throw ectx.ExceptGetMetadata();
-            info.SchemaSrc.GetMetadata(kind, info.IndexSrc, ref value);
+                throw ectx.ExceptGetAnnotation();
+            info.SchemaSrc[info.IndexSrc].Annotations.GetValue(kind, ref value);
         }
     }
 
@@ -306,7 +304,8 @@ namespace Microsoft.ML.Runtime.Data
     /// a builder for a particular column. Wrap the return in a using statement. Disposing the builder
     /// records the metadata for the column. Call Seal() once all metadata is constructed.
     /// </summary>
-    public sealed class MetadataDispatcher : MetadataDispatcherBase
+    [BestFriend]
+    internal sealed class MetadataDispatcher : MetadataDispatcherBase
     {
         public MetadataDispatcher(int colCount)
             : base(colCount)
@@ -326,7 +325,7 @@ namespace Microsoft.ML.Runtime.Data
         /// Start building metadata for a column that passes through all metadata from
         /// a source column.
         /// </summary>
-        public Builder BuildMetadata(int index, ISchema schemaSrc, int indexSrc)
+        public Builder BuildMetadata(int index, DataViewSchema schemaSrc, int indexSrc)
         {
             Contracts.CheckValue(schemaSrc, nameof(schemaSrc));
             return new Builder(this, index, schemaSrc, indexSrc);
@@ -337,7 +336,7 @@ namespace Microsoft.ML.Runtime.Data
         /// a source column. The kinds that are passed through are those for which
         /// <paramref name="filterSrc"/> returns true.
         /// </summary>
-        public Builder BuildMetadata(int index, ISchema schemaSrc, int indexSrc, Func<string, int, bool> filterSrc)
+        public Builder BuildMetadata(int index, DataViewSchema schemaSrc, int indexSrc, Func<string, int, bool> filterSrc)
         {
             Contracts.CheckValue(schemaSrc, nameof(schemaSrc));
             return new Builder(this, index, schemaSrc, indexSrc, filterSrc);
@@ -347,7 +346,7 @@ namespace Microsoft.ML.Runtime.Data
         /// Start building metadata for a column that passes through metadata of the given kind from
         /// a source column.
         /// </summary>
-        public Builder BuildMetadata(int index, ISchema schemaSrc, int indexSrc, string kindSrc)
+        public Builder BuildMetadata(int index, DataViewSchema schemaSrc, int indexSrc, string kindSrc)
         {
             Contracts.CheckValue(schemaSrc, nameof(schemaSrc));
             Contracts.CheckNonWhiteSpace(kindSrc, nameof(kindSrc));
@@ -358,7 +357,7 @@ namespace Microsoft.ML.Runtime.Data
         /// Start building metadata for a column that passes through metadata of the given kinds from
         /// a source column.
         /// </summary>
-        public Builder BuildMetadata(int index, ISchema schemaSrc, int indexSrc, params string[] kindsSrc)
+        public Builder BuildMetadata(int index, DataViewSchema schemaSrc, int indexSrc, params string[] kindsSrc)
         {
             Contracts.CheckValue(schemaSrc, nameof(schemaSrc));
             Contracts.CheckParam(Utils.Size(kindsSrc) >= 2, nameof(kindsSrc));
@@ -388,7 +387,7 @@ namespace Microsoft.ML.Runtime.Data
             /// allow restricting to an outer class.
             /// </summary>
             internal Builder(MetadataDispatcher md, int index,
-                ISchema schemaSrc = null, int indexSrc = -1, Func<string, int, bool> filterSrc = null)
+                DataViewSchema schemaSrc = null, int indexSrc = -1, Func<string, int, bool> filterSrc = null)
             {
                 Contracts.CheckValue(md, nameof(md));
                 Contracts.CheckParam(0 <= index && index < md.ColCount, nameof(index));
@@ -404,8 +403,8 @@ namespace Microsoft.ML.Runtime.Data
             /// <summary>
             /// Add metadata of the given kind. When requested, the metadata is fetched by calling the given delegate.
             /// </summary>
-            public void AddGetter<TValue>(string kind, ColumnType type,
-                MetadataUtils.MetadataGetter<TValue> getter)
+            public void AddGetter<TValue>(string kind, DataViewType type,
+                AnnotationUtils.AnnotationGetter<TValue> getter)
             {
                 Contracts.Check(_md != null, "Builder disposed");
                 Contracts.CheckNonEmpty(kind, nameof(kind));
@@ -421,13 +420,13 @@ namespace Microsoft.ML.Runtime.Data
             /// <summary>
             /// Add metadata of the given kind, with the given value.
             /// </summary>
-            public void AddPrimitive<TValue>(string kind, ColumnType type, TValue value)
+            public void AddPrimitive<TValue>(string kind, DataViewType type, TValue value)
             {
                 Contracts.Check(_md != null, "Builder disposed");
                 Contracts.CheckNonEmpty(kind, nameof(kind));
                 Contracts.CheckValue(type, nameof(type));
                 Contracts.CheckParam(type.RawType == typeof(TValue), nameof(type), "Given type doesn't match type parameter");
-                Contracts.CheckParam(type.IsPrimitive, nameof(type), "Must be a primitive type");
+                Contracts.CheckParam(type is PrimitiveDataViewType, nameof(type), "Must be a primitive type");
 
                 if (_getters != null && _getters.Any(g => g.Kind == kind))
                     throw Contracts.Except("Duplicate specification of metadata");

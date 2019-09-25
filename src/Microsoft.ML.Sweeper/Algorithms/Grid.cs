@@ -4,18 +4,18 @@
 
 using System.Collections.Generic;
 using System.Linq;
+using Microsoft.ML;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Internal.Utilities;
 using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.EntryPoints;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Runtime.Sweeper;
+using Microsoft.ML.Sweeper;
 
-[assembly: LoadableClass(typeof(RandomGridSweeper), typeof(RandomGridSweeper.Arguments), typeof(SignatureSweeper),
+[assembly: LoadableClass(typeof(RandomGridSweeper), typeof(RandomGridSweeper.Options), typeof(SignatureSweeper),
     "Random Grid Sweeper", "RandomGridSweeper", "RandomGrid")]
-[assembly: LoadableClass(typeof(RandomGridSweeper), typeof(RandomGridSweeper.Arguments), typeof(SignatureSweeperFromParameterList),
+[assembly: LoadableClass(typeof(RandomGridSweeper), typeof(RandomGridSweeper.Options), typeof(SignatureSweeperFromParameterList),
     "Random Grid Sweeper", "RandomGridSweeperParamList", "RandomGridpl")]
 
-namespace Microsoft.ML.Runtime.Sweeper
+namespace Microsoft.ML.Sweeper
 {
     /// <summary>
     /// Signature for the GUI loaders of sweepers.
@@ -27,7 +27,7 @@ namespace Microsoft.ML.Runtime.Sweeper
     /// </summary>
     public abstract class SweeperBase : ISweeper
     {
-        public class ArgumentsBase
+        public class OptionsBase
         {
             [Argument(ArgumentType.Multiple, HelpText = "Swept parameters", ShortName = "p", SignatureType = typeof(SignatureSweeperParameter))]
             public IComponentFactory<IValueGenerator>[] SweptParameters;
@@ -36,32 +36,32 @@ namespace Microsoft.ML.Runtime.Sweeper
             public int Retries = 10;
         }
 
-        private readonly ArgumentsBase _args;
+        private readonly OptionsBase _options;
         protected readonly IValueGenerator[] SweepParameters;
         protected readonly IHost Host;
 
-        protected SweeperBase(ArgumentsBase args, IHostEnvironment env, string name)
+        protected SweeperBase(OptionsBase options, IHostEnvironment env, string name)
         {
             Contracts.CheckValue(env, nameof(env));
             env.CheckNonWhiteSpace(name, nameof(name));
             Host = env.Register(name);
-            Host.CheckValue(args, nameof(args));
-            Host.CheckNonEmpty(args.SweptParameters, nameof(args.SweptParameters));
+            Host.CheckValue(options, nameof(options));
+            Host.CheckNonEmpty(options.SweptParameters, nameof(options.SweptParameters));
 
-            _args = args;
+            _options = options;
 
-            SweepParameters = args.SweptParameters.Select(p => p.CreateComponent(Host)).ToArray();
+            SweepParameters = options.SweptParameters.Select(p => p.CreateComponent(Host)).ToArray();
         }
 
-        protected SweeperBase(ArgumentsBase args, IHostEnvironment env, IValueGenerator[] sweepParameters, string name)
+        protected SweeperBase(OptionsBase options, IHostEnvironment env, IValueGenerator[] sweepParameters, string name)
         {
             Contracts.CheckValue(env, nameof(env));
             env.CheckNonWhiteSpace(name, nameof(name));
             Host = env.Register(name);
-            Host.CheckValue(args, nameof(args));
+            Host.CheckValue(options, nameof(options));
             Host.CheckValue(sweepParameters, nameof(sweepParameters));
 
-            _args = args;
+            _options = options;
             SweepParameters = sweepParameters;
         }
 
@@ -77,7 +77,7 @@ namespace Microsoft.ML.Runtime.Sweeper
                 {
                     paramSet = CreateParamSet();
                     ++retries;
-                } while (paramSet != null && retries < _args.Retries &&
+                } while (paramSet != null && retries < _options.Retries &&
                     (AlreadyGenerated(paramSet, prevParamSets) || AlreadyGenerated(paramSet, result)));
 
                 Contracts.Assert(paramSet != null);
@@ -111,20 +111,20 @@ namespace Microsoft.ML.Runtime.Sweeper
         // This is a parallel array to the _permutation array and stores the (already generated) parameter sets
         private readonly ParameterSet[] _cache;
 
-        public sealed class Arguments : ArgumentsBase
+        public sealed class Options : OptionsBase
         {
             [Argument(ArgumentType.LastOccurenceWins, HelpText = "Limit for the number of combinations to generate the entire grid.", ShortName = "maxpoints")]
             public int MaxGridPoints = 1000000;
         }
 
-        public RandomGridSweeper(IHostEnvironment env, Arguments args)
-            : base(args, env, "RandomGrid")
+        public RandomGridSweeper(IHostEnvironment env, Options options)
+            : base(options, env, "RandomGrid")
         {
             _nGridPoints = 1;
             foreach (var sweptParameter in SweepParameters)
             {
                 _nGridPoints *= sweptParameter.Count;
-                if (_nGridPoints > args.MaxGridPoints)
+                if (_nGridPoints > options.MaxGridPoints)
                     _nGridPoints = 0;
             }
             if (_nGridPoints != 0)
@@ -134,14 +134,14 @@ namespace Microsoft.ML.Runtime.Sweeper
             }
         }
 
-        public RandomGridSweeper(IHostEnvironment env, Arguments args, IValueGenerator[] sweepParameters)
-            : base(args, env, sweepParameters, "RandomGrid")
+        public RandomGridSweeper(IHostEnvironment env, Options options, IValueGenerator[] sweepParameters)
+            : base(options, env, sweepParameters, "RandomGrid")
         {
             _nGridPoints = 1;
             foreach (var sweptParameter in SweepParameters)
             {
                 _nGridPoints *= sweptParameter.Count;
-                if (_nGridPoints > args.MaxGridPoints)
+                if (_nGridPoints > options.MaxGridPoints)
                     _nGridPoints = 0;
             }
             if (_nGridPoints != 0)

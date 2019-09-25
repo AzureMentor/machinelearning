@@ -4,26 +4,25 @@
 
 using System;
 using System.Collections;
+using Microsoft.ML;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Data;
+using Microsoft.ML.EntryPoints;
 using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Ensemble.Selector;
-using Microsoft.ML.Runtime.Ensemble.Selector.FeatureSelector;
-using Microsoft.ML.Runtime.EntryPoints;
-using Microsoft.ML.Runtime.Training;
+using Microsoft.ML.Trainers.Ensemble;
 
 [assembly: LoadableClass(typeof(RandomFeatureSelector), typeof(RandomFeatureSelector.Arguments),
     typeof(SignatureEnsembleFeatureSelector), RandomFeatureSelector.UserName, RandomFeatureSelector.LoadName)]
 
-namespace Microsoft.ML.Runtime.Ensemble.Selector.FeatureSelector
+namespace Microsoft.ML.Trainers.Ensemble
 {
-    public class RandomFeatureSelector : IFeatureSelector
+    internal class RandomFeatureSelector : IFeatureSelector
     {
         public const string UserName = "Random Feature Selector";
         public const string LoadName = "RandomFeatureSelector";
 
         [TlcModule.Component(Name = LoadName, FriendlyName = UserName)]
-        public sealed class Arguments: ISupportFeatureSelectorFactory
+        public sealed class Arguments : ISupportFeatureSelectorFactory
         {
             [Argument(ArgumentType.AtMostOnce, HelpText = "The proportion of features to be selected. The range is 0.0-1.0", ShortName = "fp", SortOrder = 50)]
             public Single FeaturesSelectionProportion = 0.8f;
@@ -45,13 +44,13 @@ namespace Microsoft.ML.Runtime.Ensemble.Selector.FeatureSelector
                 "The feature proportion for RandomFeatureSelector should be greater than 0 and lesser than 1");
         }
 
-        public Subset SelectFeatures(RoleMappedData data, IRandom rand)
+        public Subset SelectFeatures(RoleMappedData data, Random rand)
         {
             _host.CheckValue(data, nameof(data));
             data.CheckFeatureFloatVector();
 
-            var type = data.Schema.Feature.Type;
-            int len = type.VectorSize;
+            var type = data.Schema.Feature.Value.Type;
+            int len = type.GetVectorSize();
             var features = new BitArray(len);
             for (int j = 0; j < len; j++)
                 features[j] = rand.NextDouble() < _args.FeaturesSelectionProportion;

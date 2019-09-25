@@ -6,18 +6,15 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
-
 using Microsoft.ML;
+using Microsoft.ML.CommandLine;
 using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Runtime.Sweeper;
-using Microsoft.ML.Runtime.Internal.Internallearn;
+using Microsoft.ML.Sweeper;
 
-[assembly: LoadableClass(typeof(SynthConfigRunner), typeof(SynthConfigRunner.Arguments), typeof(SignatureConfigRunner),
+[assembly: LoadableClass(typeof(SynthConfigRunner), typeof(SynthConfigRunner.Options), typeof(SignatureConfigRunner),
     "", "Synth")]
 
-namespace Microsoft.ML.Runtime.Sweeper
+namespace Microsoft.ML.Sweeper
 {
     /// <summary>
     /// This class gives a simple way of running optimization experiments on synthetic functions, rather than on actual learning problems.
@@ -25,7 +22,7 @@ namespace Microsoft.ML.Runtime.Sweeper
     /// </summary>
     public sealed class SynthConfigRunner : ExeConfigRunnerBase
     {
-        public sealed class Arguments : ArgumentsBase
+        public sealed class Options : OptionsBase
         {
             [Argument(ArgumentType.AtMostOnce, HelpText = "The number of threads to use for the sweep (default auto determined by the number of cores)", ShortName = "t")]
             public int? NumThreads;
@@ -33,13 +30,13 @@ namespace Microsoft.ML.Runtime.Sweeper
 
         private readonly ParallelOptions _parallelOptions;
 
-        public SynthConfigRunner(IHostEnvironment env, Arguments args)
-            : base(args, env, "SynthSweepEvaluator")
+        public SynthConfigRunner(IHostEnvironment env, Options options)
+            : base(options, env, "SynthSweepEvaluator")
         {
-            Host.CheckUserArg(args.NumThreads == null || args.NumThreads.Value > 0, nameof(args.NumThreads), "Must be positive");
-            _parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = args.NumThreads ?? -1 };
-            Host.AssertNonEmpty(args.OutputFolderName);
-            ProcessFullExePath(args.Exe);
+            Host.CheckUserArg(options.NumThreads == null || options.NumThreads.Value > 0, nameof(options.NumThreads), "Must be positive");
+            _parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = options.NumThreads ?? -1 };
+            Host.AssertNonEmpty(options.OutputFolderName);
+            ProcessFullExePath(options.Exe);
         }
 
         protected override IEnumerable<IRunResult> RunConfigsCore(ParameterSet[] sweeps, IChannel ch, int min)

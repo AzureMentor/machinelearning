@@ -2,13 +2,15 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Microsoft.ML.Runtime.Internal.Utilities;
 using System;
+using System.CodeDom.Compiler;
 using System.IO;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Runtime;
 using Xunit;
 using Xunit.Abstractions;
 
-namespace Microsoft.ML.Runtime.RunTests
+namespace Microsoft.ML.RunTests
 {
     public sealed partial class CmdIndenterTests : BaseTestBaseline
     {
@@ -38,14 +40,14 @@ namespace Microsoft.ML.Runtime.RunTests
 
         internal void Run()
         {
-            string text = GetResText("Microsoft.ML.Runtime.RunTests.CmdLine.IndenterTestInput.txt");
+            string text = GetResText("Microsoft.ML.RunTests.CmdLine.IndenterTestInput.txt");
 
             string outName = "CmdIndenterOutput.txt";
             string outPath = DeleteOutputPath("CmdLine", outName);
 
             using (var writer = File.CreateText(outPath))
             {
-                var wrt = IndentingTextWriter.Wrap(writer);
+                var wrt = new IndentedTextWriter(writer, "  ");
 
                 // Individual scripts are separated by $
                 int count = 0;

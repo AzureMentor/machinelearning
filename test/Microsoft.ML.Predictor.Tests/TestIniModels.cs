@@ -2,16 +2,16 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Threading;
-using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.Internal.Utilities;
+using Microsoft.ML.Data;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Model;
+using Xunit;
+using Xunit.Abstractions;
 
-namespace Microsoft.ML.Runtime.RunTests
+namespace Microsoft.ML.RunTests
 {
-    using TestLearners = TestLearnersBase;
 
 #if OLD_TESTS // REVIEW: Need to port the INI stuff.
     /// <summary>
@@ -315,7 +315,7 @@ namespace Microsoft.ML.Runtime.RunTests
                         );
                 }
             }
-            Assert.IsTrue(failureTestInformation.Count <= 0);
+            Assert.True(failureTestInformation.Count <= 0);
         }
 
         /// <summary>
@@ -351,7 +351,7 @@ namespace Microsoft.ML.Runtime.RunTests
             string modelFilePath = GetOutputPath(runParameters.BaselineDir, runParameters.ModelFilename);
             string trainDatasetPath = GetDataPath(trainDataset);
             string evaluationOutputDir = GetOutputDir(evaluationOutputDirPrefix + @"\Dirs\" + outName);
-            Assert.IsNull(EnsureEmptyDirectory(evaluationOutputDir));
+            Assert.Null(EnsureEmptyDirectory(evaluationOutputDir));
 
             string cmd = string.Format(EvaluationCommandLineFormat, modelFilePath, evaluationOutputDir, trainDatasetPath);
             string dir = Path.GetFullPath(EvaluationExecutorDir);
@@ -504,4 +504,95 @@ namespace Microsoft.ML.Runtime.RunTests
         }
     }
 #endif
+
+    public sealed class TestIniModels : TestDataPipeBase
+    {
+        public TestIniModels(ITestOutputHelper output) : base(output)
+        {
+        }
+
+        [Fact]
+        public void TestGamRegressionIni()
+        {
+            var mlContext = new MLContext(seed: 0);
+            var idv = mlContext.Data.CreateTextLoader(
+                    new TextLoader.Options()
+                    {
+                        HasHeader = false,
+                        Columns = new[]
+                        {
+                            new TextLoader.Column("Label", DataKind.Single, 0),
+                            new TextLoader.Column("Features", DataKind.Single, 1, 9)
+                        }
+                    }).Load(GetDataPath("breast-cancer.txt"));
+
+            var pipeline = mlContext.Transforms.ReplaceMissingValues("Features")
+                .Append(mlContext.Regression.Trainers.Gam());
+            var model = pipeline.Fit(idv);
+            var data = model.Transform(idv);
+
+            var roleMappedSchema = new RoleMappedSchema(data.Schema, false,
+                new KeyValuePair<RoleMappedSchema.ColumnRole, string>(RoleMappedSchema.ColumnRole.Feature, "Features"),
+                new KeyValuePair<RoleMappedSchema.ColumnRole, string>(RoleMappedSchema.ColumnRole.Label, "Label"));
+
+            string modelIniPath = GetOutputPath(FullTestName + "-model.ini");
+            using (Stream iniStream = File.Create(modelIniPath))
+            using (StreamWriter iniWriter = Utils.OpenWriter(iniStream))
+                ((ICanSaveInIniFormat)model.LastTransformer.Model).SaveAsIni(iniWriter, roleMappedSchema);
+
+            var results = mlContext.Regression.Evaluate(data);
+
+            // Getting parity results from maml.exe:
+            // maml.exe ini ini=model.ini out=model_ini.zip data=breast-cancer.txt  loader=TextLoader{col=Label:R4:0 col=Features:R4:1-9} xf=NAHandleTransform{col=Features slot=- ind=-} kind=Regression
+            Assert.Equal(0.093256807643323947, results.MeanAbsoluteError);
+            Assert.Equal(0.025707474358979077, results.MeanSquaredError);
+            Assert.Equal(0.16033550560926635, results.RootMeanSquaredError);
+            Assert.Equal(0.88620288753853549, results.RSquared);
+        }
+
+        [Fact]
+        public void TestGamBinaryClassificationIni()
+        {
+            var mlContext = new MLContext(seed: 0);
+            var idv = mlContext.Data.CreateTextLoader(
+                    new TextLoader.Options()
+                    {
+                        HasHeader = false,
+                        Columns = new[]
+                        {
+                            new TextLoader.Column("Label", DataKind.Boolean, 0),
+                            new TextLoader.Column("Features", DataKind.Single, 1, 9)
+                        }
+                    }).Load(GetDataPath("breast-cancer.txt"));
+
+            var pipeline = mlContext.Transforms.ReplaceMissingValues("Features")
+                .Append(mlContext.BinaryClassification.Trainers.Gam());
+            var model = pipeline.Fit(idv);
+            var data = model.Transform(idv);
+
+            var roleMappedSchema = new RoleMappedSchema(data.Schema, false,
+                new KeyValuePair<RoleMappedSchema.ColumnRole, string>(RoleMappedSchema.ColumnRole.Feature, "Features"),
+                new KeyValuePair<RoleMappedSchema.ColumnRole, string>(RoleMappedSchema.ColumnRole.Label, "Label"));
+
+            var calibratedPredictor = model.LastTransformer.Model;
+            var predictor = calibratedPredictor.SubModel as ICanSaveInIniFormat;
+            string modelIniPath = GetOutputPath(FullTestName + "-model.ini");
+
+            using (Stream iniStream = File.Create(modelIniPath))
+            using (StreamWriter iniWriter = Utils.OpenWriter(iniStream))
+                predictor.SaveAsIni(iniWriter, roleMappedSchema, calibratedPredictor.Calibrator);
+
+            var results = mlContext.BinaryClassification.Evaluate(data);
+
+            // Getting parity results from maml.exe:
+            // maml.exe ini ini=model.ini out=model_ini.zip data=breast-cancer.txt  loader=TextLoader{col=Label:R4:0 col=Features:R4:1-9} xf=NAHandleTransform{col=Features slot=- ind=-} kind=Binary
+            Assert.Equal(0.99545199224483139, results.AreaUnderRocCurve);
+            Assert.Equal(0.96995708154506433, results.Accuracy);
+            Assert.Equal(0.95081967213114749, results.PositivePrecision);
+            Assert.Equal(0.96265560165975106, results.PositiveRecall);
+            Assert.Equal(0.95670103092783509, results.F1Score);
+            Assert.Equal(0.11594021906091197, results.LogLoss);
+        }
+    }
+
 }

@@ -4,10 +4,10 @@
 
 using System.Runtime.InteropServices;
 
-namespace Microsoft.ML.Runtime.Data.IO
+namespace Microsoft.ML.Data.IO
 {
     [StructLayout(LayoutKind.Explicit, Size = HeaderSize)]
-    public struct Header
+    internal struct Header
     {
         /// <summary>
         /// The fixed header size. This should not be changed even in future versions of the format.

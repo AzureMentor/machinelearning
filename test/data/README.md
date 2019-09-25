@@ -16,11 +16,27 @@ The datasets are provided under the original terms that Microsoft received such 
 >
 >Original readme: https://meta.wikimedia.org/wiki/Research:Detox
 
+### Digits
+> This dataset is provided under http://archive.ics.uci.edu/ml/datasets/Optical+Recognition+of+Handwritten+Digits.
+>
+> References: C. Kaynak (1995) Methods of Combining Multiple Classifiers and Their Applications to Handwritten Digit Recognition, MSc Thesis, Institute of Graduate Studies in Science and Engineering, Bogazici University.
+> E. Alpaydin, C. Kaynak (1998) Cascading Classifiers, Kybernetika.
+
 ### UCI Adult Dataset 
 
 >Dua, D. and Karra Taniskidou, E. (2017). UCI Machine Learning Repository [https://archive.ics.uci.edu/ml]. Irvine, CA: University of California, School of Information and Computer Science.
 >
 >https://archive.ics.uci.edu/ml/datasets/Adult
+
+### UCI Iris Flower Dataset
+
+>Redistributing the datasets "iris.data" and "iris.txt" with attribution:
+>
+>Dua, D. and Karra Taniskidou, E. (2017). UCI Machine Learning Repository [https://archive.ics.uci.edu/ml]. Irvine, CA: University of California, School of Information and Computer Science.
+>
+>With modifications to "iris.txt" by changing the separator character, order of columns, and numerical encoding of labels.
+>
+>https://archive.ics.uci.edu/ml/datasets/iris
 
 ### Breast Cancer Wisconsin
 
@@ -65,6 +81,29 @@ The dataset is under a CC-by 4.0 license.
 }
 ```
 
+### Boston Housing Data
+
+Redistributing the dataset "[housing.txt](housing.txt)" with attribution:
+
+ > Harrison, D. and Rubinfeld, D.L. 'Hedonic prices and the demand for clean air', J. Environ. Economics & Management, vol.5, 81-102, 1978.
+
+More information: https://archive.ics.uci.edu/ml/machine-learning-databases/housing/housing.names
+
+### Air Quality
+
+This dataset is from the R documentation: [New York Air Quality Measurements]https://stat.ethz.ch/R-manual/R-devel/library/datasets/html/airquality.html
+The data were obtained from the New York State Department of Conservation (ozone data) and the National Weather Service (meteorological data). 
+References: Chambers, J. M., Cleveland, W. S., Kleiner, B. and Tukey, P. A. (1983) Graphical Methods for Data Analysis. Belmont, CA: Wadsworth. 
+
+The dataset is distributed under [GPLv2](https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html)
+
+### Infertility 
+
+This dataset is from the R documentation: [Infertility after Spontaneous and Induced Abortion]https://stat.ethz.ch/R-manual/R-devel/library/datasets/html/infert.html
+Original source: Trichopoulos et al (1976) Br. J. of Obst. and Gynaec. 83, 645–650. 
+
+The dataset is distributed under [GPLv2](https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html)
+
 # Images
 
 ### Located in `images` folder
@@ -74,3 +113,5 @@ The dataset is under a CC-by 4.0 license.
 > "[Hot dog with mustard](https://visualsonline.cancer.gov/details.cfm?imageid=2669)" by Renee Comet is in the public domain - this image was released by the [National Cancer Institute](https://visualsonline.cancer.gov/details.cfm?imageid=2669)
 >
 > "[Bright red tomato and cross section02](https://upload.wikimedia.org/wikipedia/commons/8/88/Bright_red_tomato_and_cross_section02.jpg)" by [fir0002](https://en.wikipedia.org/wiki/User:Fir0002) is licensed under the [CC BY-NC](https://creativecommons.org/licenses/by/2.0/)
+>
+> "[Grilled Portabella and Poblano Tacos](https://www.foodista.com/sites/default/files/78307aH.jpg)" by [foodista](https://www.foodista.com) is licensed under the [CC BY-NC](https://creativecommons.org/licenses/by/2.0/) as per [Bing Images search using All Creative Commons license filter](https://www.bing.com/images/search?q=78307aH&qs=n&form=QBIR&qft=%20filterui%3AlicenseType-Any&sp=-1&pq=78307ah&sc=8-7&sk=&cvid=C44379B4A4FA42C09D7629976997390C)

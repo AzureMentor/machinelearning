@@ -7,14 +7,15 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
-using Microsoft.ML.Runtime.Internal.Utilities;
+using Microsoft.ML.Internal.Utilities;
 
-namespace Microsoft.ML.Runtime.Data
+namespace Microsoft.ML.Runtime
 {
     /// <summary>
     /// The progress reporting classes used by <see cref="HostEnvironmentBase{THostEnvironmentBase}"/> descendants.
     /// </summary>
-    public static class ProgressReporting
+    [BestFriend]
+    internal static class ProgressReporting
     {
         /// <summary>
         /// The progress channel for <see cref="ConsoleEnvironment"/>.
@@ -23,8 +24,6 @@ namespace Microsoft.ML.Runtime.Data
         public sealed class ProgressChannel : IProgressChannel
         {
             private readonly IExceptionContext _ectx;
-
-            private readonly string _name;
 
             /// <summary>
             /// The pair of (header, fill action) is updated atomically.
@@ -40,7 +39,7 @@ namespace Microsoft.ML.Runtime.Data
             private volatile int _maxSubId;
             private bool _isDisposed;
 
-            public string Name { get { return _name; } }
+            public string Name { get; }
 
             /// <summary>
             /// Initialize a <see cref="ProgressChannel"/> for the process identified by <paramref name="computationName"/>.
@@ -55,7 +54,7 @@ namespace Microsoft.ML.Runtime.Data
                 _ectx.CheckValue(tracker, nameof(tracker));
                 _ectx.CheckNonEmpty(computationName, nameof(computationName));
 
-                _name = computationName;
+                Name = computationName;
                 _tracker = tracker;
                 _subChannels = new ConcurrentDictionary<int, SubChannel>();
                 _maxSubId = 0;
@@ -131,7 +130,7 @@ namespace Microsoft.ML.Runtime.Data
                 var entry = new ProgressEntry(false, cache.Item1);
 
                 if (fillAction == null)
-                    Contracts.Assert(entry.Header.MetricNames.Length == 0 && entry.Header.UnitNames.Length == 0);
+                    Contracts.Assert(entry.Header.MetricNames.Count == 0 && entry.Header.UnitNames.Count == 0);
                 else
                     fillAction(entry);
 
@@ -145,9 +144,7 @@ namespace Microsoft.ML.Runtime.Data
 
             private IProgressChannel StartProgressChannel(int level)
             {
-#pragma warning disable 420 // Interlocked with volatile.
                 var newId = Interlocked.Increment(ref _maxSubId);
-#pragma warning restore 420
                 return new SubChannel(this, level, newId);
             }
 
@@ -233,7 +230,7 @@ namespace Microsoft.ML.Runtime.Data
                     var entry = new ProgressEntry(false, cache.Item1);
 
                     if (fillAction == null)
-                        Contracts.Assert(entry.Header.MetricNames.Length == 0 && entry.Header.UnitNames.Length == 0);
+                        Contracts.Assert(entry.Header.MetricNames.Count == 0 && entry.Header.UnitNames.Count == 0);
                     else
                         fillAction(entry);
                     return entry;
@@ -468,6 +465,17 @@ namespace Microsoft.ML.Runtime.Data
 
                 return list;
             }
+
+            public void Reset()
+            {
+                lock (_lock)
+                {
+                    while (!_pendingEvents.IsEmpty)
+                        _pendingEvents.TryDequeue(out var res);
+                    _namesUsed.Clear();
+                    _index = 0;
+                }
+            }
         }
 
         /// <summary>
@@ -548,9 +556,9 @@ namespace Microsoft.ML.Runtime.Data
                 Contracts.CheckValue(header, nameof(header));
                 Header = header;
                 IsCheckpoint = isCheckpoint;
-                Progress = new Double?[header.UnitNames.Length];
-                ProgressLim = new Double?[header.UnitNames.Length];
-                Metrics = new Double?[header.MetricNames.Length];
+                Progress = new Double?[header.UnitNames.Count];
+                ProgressLim = new Double?[header.UnitNames.Count];
+                Metrics = new Double?[header.MetricNames.Count];
             }
         }
 

@@ -2,16 +2,15 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using System;
 using System.Collections.Generic;
-using Microsoft.ML.Runtime.Data;
 
-namespace Microsoft.ML.Runtime.EntryPoints
+namespace Microsoft.ML.EntryPoints
 {
     /// <summary>
-    /// Common output classes for trainers and transforms.
+    /// Common output classes for trainers and transform entry-points.
     /// </summary>
-    public static class CommonOutputs
+    [BestFriend]
+    internal static class CommonOutputs
     {
         /// <summary>
         /// The common output class for all transforms.
@@ -24,7 +23,7 @@ namespace Microsoft.ML.Runtime.EntryPoints
             public IDataView OutputData;
 
             [TlcModule.Output(Desc = "Transform model", SortOrder = 2)]
-            public ITransformModel Model;
+            public TransformModel Model;
         }
 
         /// <summary>
@@ -33,7 +32,7 @@ namespace Microsoft.ML.Runtime.EntryPoints
         public interface ITransformOutput
         {
             Var<IDataView> OutputData { get; }
-            Var<ITransformModel> Model { get; }
+            Var<TransformModel> Model { get; }
         }
 
         /// <summary>
@@ -44,7 +43,7 @@ namespace Microsoft.ML.Runtime.EntryPoints
         public abstract class TrainerOutput
         {
             [TlcModule.Output(Desc = "The trained model", SortOrder = 1)]
-            public IPredictorModel PredictorModel;
+            public PredictorModel PredictorModel;
         }
 
         /// <summary>
@@ -187,7 +186,7 @@ namespace Microsoft.ML.Runtime.EntryPoints
         /// </summary>
         public interface ITrainerOutput
         {
-            Var<IPredictorModel> PredictorModel { get; }
+            Var<PredictorModel> PredictorModel { get; }
         }
 
         /// <summary>

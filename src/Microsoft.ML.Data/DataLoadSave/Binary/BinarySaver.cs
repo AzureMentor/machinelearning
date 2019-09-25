@@ -10,22 +10,23 @@ using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
-using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.ML;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Data;
+using Microsoft.ML.Data.IO;
+using Microsoft.ML.Internal.Utilities;
 using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Data.IO;
-using Microsoft.ML.Runtime.Internal.Utilities;
 
 [assembly: LoadableClass(BinarySaver.Summary, typeof(BinarySaver), typeof(BinarySaver.Arguments), typeof(SignatureDataSaver),
     "Binary Saver", "BinarySaver", "Binary")]
 
-namespace Microsoft.ML.Runtime.Data.IO
+namespace Microsoft.ML.Data.IO
 {
     using Stopwatch = System.Diagnostics.Stopwatch;
 
-    public sealed class BinarySaver : IDataSaver
+    [BestFriend]
+    internal sealed class BinarySaver : IDataSaver
     {
         public sealed class Arguments
         {
@@ -63,7 +64,7 @@ namespace Microsoft.ML.Runtime.Data.IO
         /// This is a simple struct to associate a source index with a codec, without having to have
         /// parallel structures everywhere.
         /// </summary>
-        private struct ColumnCodec
+        private readonly struct ColumnCodec
         {
             public readonly int SourceIndex;
             public readonly IValueCodec Codec;
@@ -88,7 +89,7 @@ namespace Microsoft.ML.Runtime.Data.IO
             /// <summary>
             /// Returns an appropriate generic <c>WritePipe{T}</c> for the given column.
             /// </summary>
-            public static WritePipe Create(BinarySaver parent, IRowCursor cursor, ColumnCodec col)
+            public static WritePipe Create(BinarySaver parent, DataViewRowCursor cursor, ColumnCodec col)
             {
                 Type writePipeType = typeof(WritePipe<>).MakeGenericType(col.Codec.Type.RawType);
                 return (WritePipe)Activator.CreateInstance(writePipeType, parent, cursor, col);
@@ -109,13 +110,13 @@ namespace Microsoft.ML.Runtime.Data.IO
             private MemoryStream _currentStream;
             private T _value;
 
-            public WritePipe(BinarySaver parent, IRowCursor cursor, ColumnCodec col)
+            public WritePipe(BinarySaver parent, DataViewRowCursor cursor, ColumnCodec col)
                 : base(parent)
             {
                 var codec = col.Codec as IValueCodec<T>;
                 Contracts.AssertValue(codec);
                 _codec = codec;
-                _getter = cursor.GetGetter<T>(col.SourceIndex);
+                _getter = cursor.GetGetter<T>(cursor.Schema[col.SourceIndex]);
             }
 
             public override void BeginBlock()
@@ -129,7 +130,7 @@ namespace Microsoft.ML.Runtime.Data.IO
             {
                 Contracts.Assert(_writer != null);
                 _getter(ref _value);
-                _writer.Write(ref _value);
+                _writer.Write(in _value);
             }
 
             public override MemoryStream EndBlock()
@@ -149,7 +150,7 @@ namespace Microsoft.ML.Runtime.Data.IO
         /// also have a dual usage if <see cref="Exception"/> is non-null of indicating
         /// a source worker threw an exception.
         /// </summary>
-        private struct Block
+        private readonly struct Block
         {
             /// <summary>
             /// Take one guess.
@@ -254,11 +255,11 @@ namespace Microsoft.ML.Runtime.Data.IO
         /// <param name="ch">The channel to which we write any diagnostic information</param>
         /// <returns>The offset of the metadata table of contents, or 0 if there was
         /// no metadata</returns>
-        private long WriteMetadata(BinaryWriter writer, ISchema schema, int col, IChannel ch)
+        private long WriteMetadata(BinaryWriter writer, DataViewSchema schema, int col, IChannel ch)
         {
             _host.AssertValue(writer);
             _host.AssertValue(schema);
-            _host.Assert(0 <= col && col < schema.ColumnCount);
+            _host.Assert(0 <= col && col < schema.Count);
 
             int count = 0;
             WriteMetadataCoreDelegate del = WriteMetadataCore<int>;
@@ -274,25 +275,25 @@ namespace Microsoft.ML.Runtime.Data.IO
             // track of the location and size of each for when we write the metadata table of contents.
             // (To be clear, this specific layout is not required by the format.)
 
-            foreach (var pair in schema.GetMetadataTypes(col))
+            foreach (var metaColumn in schema[col].Annotations.Schema)
             {
-                _host.Check(!string.IsNullOrEmpty(pair.Key), "Metadata with null or empty kind detected, disallowed");
-                _host.Check(pair.Value != null, "Metadata with null type detected, disallowed");
-                if (!kinds.Add(pair.Key))
-                    throw _host.Except("Metadata with duplicate kind '{0}' encountered, disallowed", pair.Key, schema.GetColumnName(col));
-                args[3] = pair.Key;
-                args[4] = pair.Value;
-                IValueCodec codec = (IValueCodec)methInfo.MakeGenericMethod(pair.Value.RawType).Invoke(this, args);
+                _host.Check(!string.IsNullOrEmpty(metaColumn.Name), "Metadata with null or empty kind detected, disallowed");
+                _host.Check(metaColumn.Type != null, "Metadata with null type detected, disallowed");
+                if (!kinds.Add(metaColumn.Name))
+                    throw _host.Except("Metadata with duplicate kind '{0}' encountered, disallowed", metaColumn.Name, schema[col].Name);
+                args[3] = metaColumn.Name;
+                args[4] = metaColumn.Type;
+                IValueCodec codec = (IValueCodec)methInfo.MakeGenericMethod(metaColumn.Type.RawType).Invoke(this, args);
                 if (codec == null)
                 {
                     // Nothing was written.
                     ch.Warning("Could not get codec for type {0}, dropping column '{1}' index {2} metadata kind '{3}'",
-                        pair.Value, schema.GetColumnName(col), col, pair.Key);
+                        metaColumn.Type, schema[col].Name, col, metaColumn.Name);
                     continue;
                 }
                 offsets.Add(writer.BaseStream.Position);
                 _host.CheckIO(offsets[offsets.Count - 1] > offsets[offsets.Count - 2], "Bad offsets detected during write");
-                metadataInfos.Add(Tuple.Create(pair.Key, codec, (CompressionKind)args[5]));
+                metadataInfos.Add(Tuple.Create(metaColumn.Name, codec, (CompressionKind)args[5]));
                 count++;
             }
             if (metadataInfos.Count == 0)
@@ -341,9 +342,9 @@ namespace Microsoft.ML.Runtime.Data.IO
             return offsets[metadataInfos.Count];
         }
 
-        private delegate IValueCodec WriteMetadataCoreDelegate(Stream stream, ISchema schema, int col, string kind, ColumnType type, out CompressionKind compression);
+        private delegate IValueCodec WriteMetadataCoreDelegate(Stream stream, DataViewSchema schema, int col, string kind, DataViewType type, out CompressionKind compression);
 
-        private IValueCodec WriteMetadataCore<T>(Stream stream, ISchema schema, int col, string kind, ColumnType type, out CompressionKind compressionKind)
+        private IValueCodec WriteMetadataCore<T>(Stream stream, DataViewSchema schema, int col, string kind, DataViewType type, out CompressionKind compressionKind)
         {
             _host.Assert(typeof(T) == type.RawType);
             IValueCodec generalCodec;
@@ -354,7 +355,7 @@ namespace Microsoft.ML.Runtime.Data.IO
             }
             IValueCodec<T> codec = (IValueCodec<T>)generalCodec;
             T value = default(T);
-            schema.GetMetadata(kind, col, ref value);
+            schema[col].Annotations.GetValue(kind, ref value);
 
             // Metadatas will often be pretty small, so that compression makes no sense.
             // We try both a compressed and uncompressed version of metadata and
@@ -362,7 +363,7 @@ namespace Microsoft.ML.Runtime.Data.IO
             MemoryStream uncompressedMem = _memPool.Get();
             using (IValueWriter<T> writer = codec.OpenWriter(uncompressedMem))
             {
-                writer.Write(ref value);
+                writer.Write(in value);
                 writer.Commit();
             }
             MemoryStream compressedMem = _memPool.Get();
@@ -390,7 +391,7 @@ namespace Microsoft.ML.Runtime.Data.IO
         }
 
         private void WriteWorker(Stream stream, BlockingCollection<Block> toWrite, ColumnCodec[] activeColumns,
-            ISchema sourceSchema, int rowsPerBlock, IChannelProvider cp, ExceptionMarshaller exMarshaller)
+            DataViewSchema sourceSchema, int rowsPerBlock, IChannelProvider cp, ExceptionMarshaller exMarshaller)
         {
             _host.AssertValue(exMarshaller);
             try
@@ -508,7 +509,7 @@ namespace Microsoft.ML.Runtime.Data.IO
                                 // long: Offset to the start of the lookup table
                                 // long: Offset to the start of the metadata TOC entries, or 0 if this has no metadata
 
-                                string name = sourceSchema.GetColumnName(active.SourceIndex);
+                                string name = sourceSchema[active.SourceIndex].Name;
                                 writer.Write(name);
                                 int nameLen = Encoding.UTF8.GetByteCount(name);
                                 expectedPosition += Utils.Leb128IntLength((uint)nameLen) + nameLen;
@@ -519,7 +520,7 @@ namespace Microsoft.ML.Runtime.Data.IO
                                 expectedPosition++;
                                 // REVIEW: Right now the number of rows per block is fixed, so we
                                 // write the same value each time. In some future state, it may be that this
-                                // is relaxed, with possibly some tradeoffs (e.g., inability to randomly seek).
+                                // is relaxed, with possibly some tradeoffs (for example, inability to randomly seek).
                                 writer.WriteLeb128Int((ulong)rowsPerBlock);
                                 expectedPosition += Utils.Leb128IntLength((uint)rowsPerBlock);
                                 // Offset of the lookup table.
@@ -555,8 +556,6 @@ namespace Microsoft.ML.Runtime.Data.IO
                         writer.Seek(0, SeekOrigin.Begin);
                         writer.Write(headerBytes);
                     }
-
-                    ch.Done();
                 }
             }
             catch (Exception ex)
@@ -566,7 +565,7 @@ namespace Microsoft.ML.Runtime.Data.IO
         }
 
         private void FetchWorker(BlockingCollection<Block> toCompress, IDataView data,
-            ColumnCodec[] activeColumns, int rowsPerBlock, Stopwatch sw, IChannel ch, IProgressChannel pch, ExceptionMarshaller exMarshaller)
+            ColumnCodec[] activeColumns, int rowsPerBlock, IChannel ch, IProgressChannel pch, ExceptionMarshaller exMarshaller)
         {
             Contracts.AssertValue(ch);
             Contracts.AssertValueOrNull(pch);
@@ -576,14 +575,13 @@ namespace Microsoft.ML.Runtime.Data.IO
                 ch.AssertValue(toCompress);
                 ch.AssertValue(data);
                 ch.AssertValue(activeColumns);
-                ch.AssertValue(sw);
                 ch.Assert(rowsPerBlock > 0);
 
                 // The main thread handles fetching from the cursor, and storing it into blocks passed to toCompress.
                 HashSet<int> activeSet = new HashSet<int>(activeColumns.Select(col => col.SourceIndex));
                 long blockIndex = 0;
                 int remainingInBlock = rowsPerBlock;
-                using (IRowCursor cursor = data.GetRowCursor(activeSet.Contains))
+                using (DataViewRowCursor cursor = data.GetRowCursor(data.Schema.Where(c => activeSet.Contains(c.Index))))
                 {
                     WritePipe[] pipes = new WritePipe[activeColumns.Length];
                     for (int c = 0; c < activeColumns.Length; ++c)
@@ -633,7 +631,7 @@ namespace Microsoft.ML.Runtime.Data.IO
             }
         }
 
-        public bool IsColumnSavable(ColumnType type)
+        public bool IsColumnSavable(DataViewType type)
         {
             IValueCodec codec;
             return _factory.TryGetCodec(type, out codec);
@@ -663,26 +661,19 @@ namespace Microsoft.ML.Runtime.Data.IO
                 if (activeColumns.Length > 0)
                 {
                     OrderedWaiter waiter = _deterministicBlockOrder ? new OrderedWaiter() : null;
-                    Thread[] compressionThreads = new Thread[Environment.ProcessorCount];
+                    Task[] compressionThreads = new Task[Environment.ProcessorCount];
                     for (int i = 0; i < compressionThreads.Length; ++i)
                     {
-                        compressionThreads[i] = Utils.CreateBackgroundThread(
+                        compressionThreads[i] = Utils.RunOnBackgroundThread(
                             () => CompressionWorker(toCompress, toWrite, activeColumns.Length, waiter, exMarshaller));
-                        compressionThreads[i].Start();
                     }
-                    compressionTask = new Task(() =>
-                    {
-                        foreach (Thread t in compressionThreads)
-                            t.Join();
-                    });
-                    compressionTask.Start();
+                    compressionTask = Task.WhenAll(compressionThreads);
                 }
 
                 // While there is an advantage to putting the IO into a separate thread, there is not an
                 // advantage to having more than one worker.
-                Thread writeThread = Utils.CreateBackgroundThread(
+                Task writeThread = Utils.RunOnBackgroundThread(
                     () => WriteWorker(stream, toWrite, activeColumns, data.Schema, rowsPerBlock, _host, exMarshaller));
-                writeThread.Start();
                 sw.Start();
 
                 // REVIEW: For now the fetch worker just works in the main thread. If it's
@@ -692,7 +683,7 @@ namespace Microsoft.ML.Runtime.Data.IO
                 // pattern of utilizing exMarshaller.
                 using (var pch = _silent ? null : _host.StartProgressChannel("BinarySaver"))
                 {
-                    FetchWorker(toCompress, data, activeColumns, rowsPerBlock, sw, ch, pch, exMarshaller);
+                    FetchWorker(toCompress, data, activeColumns, rowsPerBlock, ch, pch, exMarshaller);
                 }
 
                 _host.Assert(compressionTask != null || toCompress.IsCompleted);
@@ -700,18 +691,17 @@ namespace Microsoft.ML.Runtime.Data.IO
                     compressionTask.Wait();
                 toWrite.CompleteAdding();
 
-                writeThread.Join();
+                writeThread.Wait();
                 exMarshaller.ThrowIfSet(ch);
                 if (!_silent)
                     ch.Info("Wrote {0} rows across {1} columns in {2}", _rowCount, activeColumns.Length, sw.Elapsed);
-                ch.Done();
                 // When we dispose the exception marshaller, this will set the cancellation token when we internally
                 // dispose the cancellation token source, so one way or another those threads are being cancelled, even
                 // if an exception is thrown in the main body of this function.
             }
         }
 
-        private ColumnCodec[] GetActiveColumns(ISchema schema, int[] colIndices)
+        private ColumnCodec[] GetActiveColumns(DataViewSchema schema, int[] colIndices)
         {
             _host.AssertValue(schema);
             _host.AssertValueOrNull(colIndices);
@@ -722,10 +712,10 @@ namespace Microsoft.ML.Runtime.Data.IO
 
             for (int c = 0; c < colIndices.Length; ++c)
             {
-                ColumnType type = schema.GetColumnType(colIndices[c]);
+                DataViewType type = schema[colIndices[c]].Type;
                 IValueCodec codec;
                 if (!_factory.TryGetCodec(type, out codec))
-                    throw _host.Except("Could not get codec for requested column {0} of type {1}", schema.GetColumnName(c), type);
+                    throw _host.Except("Could not get codec for requested column {0} of type {1}", schema[c].Name, type);
                 _host.Assert(type.Equals(codec.Type));
                 activeSourceColumns[c] = new ColumnCodec(colIndices[c], codec);
             }
@@ -744,12 +734,12 @@ namespace Microsoft.ML.Runtime.Data.IO
 
             // First get the cursor.
             HashSet<int> active = new HashSet<int>(actives.Select(cc => cc.SourceIndex));
-            IRandom rand = data.CanShuffle ? new TauswortheHybrid(_host.Rand) : null;
+            Random rand = data.CanShuffle ? new TauswortheHybrid(_host.Rand) : null;
             // Get the estimators.
             EstimatorDelegate del = EstimatorCore<int>;
             MethodInfo methInfo = del.GetMethodInfo().GetGenericMethodDefinition();
 
-            using (IRowCursor cursor = data.GetRowCursor(active.Contains, rand))
+            using (DataViewRowCursor cursor = data.GetRowCursor(data.Schema.Where(x => active.Contains(x.Index)), rand))
             {
                 object[] args = new object[] { cursor, null, null, null };
                 var writers = new IValueWriter[actives.Length];
@@ -779,13 +769,13 @@ namespace Microsoft.ML.Runtime.Data.IO
             }
         }
 
-        private delegate void EstimatorDelegate(IRowCursor cursor, ColumnCodec col,
+        private delegate void EstimatorDelegate(DataViewRowCursor cursor, ColumnCodec col,
             out Func<long> fetchWriteEstimator, out IValueWriter writer);
 
-        private void EstimatorCore<T>(IRowCursor cursor, ColumnCodec col,
+        private void EstimatorCore<T>(DataViewRowCursor cursor, ColumnCodec col,
             out Func<long> fetchWriteEstimator, out IValueWriter writer)
         {
-            ValueGetter<T> getter = cursor.GetGetter<T>(col.SourceIndex);
+            ValueGetter<T> getter = cursor.GetGetter<T>(cursor.Schema[col.SourceIndex]);
             IValueCodec<T> codec = col.Codec as IValueCodec<T>;
             _host.AssertValue(codec);
             IValueWriter<T> specificWriter = codec.OpenWriter(Stream.Null);
@@ -794,7 +784,7 @@ namespace Microsoft.ML.Runtime.Data.IO
             fetchWriteEstimator = () =>
             {
                 getter(ref val);
-                specificWriter.Write(ref val);
+                specificWriter.Write(in val);
                 return specificWriter.GetCommitLengthEstimate();
             };
         }
@@ -809,7 +799,7 @@ namespace Microsoft.ML.Runtime.Data.IO
         /// <returns>Returns if have the ability to save this column type. If we do, we write
         /// the description to the stream. If we do not, nothing is written to the stream and
         /// the stream is not advanced.</returns>
-        public bool TryWriteTypeDescription(Stream stream, ColumnType type, out int bytesWritten)
+        public bool TryWriteTypeDescription(Stream stream, DataViewType type, out int bytesWritten)
         {
             _host.CheckValue(stream, nameof(stream));
             _host.CheckValue(type, nameof(type));
@@ -833,7 +823,7 @@ namespace Microsoft.ML.Runtime.Data.IO
         /// <param name="stream">The stream to load the type description from</param>
         /// <returns>A non-null value if the type descriptor was recognized, or null if
         /// it was not</returns>
-        public ColumnType LoadTypeDescriptionOrNull(Stream stream)
+        public DataViewType LoadTypeDescriptionOrNull(Stream stream)
         {
             _host.CheckValue(stream, nameof(stream));
 
@@ -851,7 +841,7 @@ namespace Microsoft.ML.Runtime.Data.IO
         /// <param name="value">The value to encode and write</param>
         /// <param name="bytesWritten">The number of bytes written</param>
         /// <returns>Whether the write was successful or not</returns>
-        public bool TryWriteTypeAndValue<T>(Stream stream, ColumnType type, ref T value, out int bytesWritten)
+        public bool TryWriteTypeAndValue<T>(Stream stream, DataViewType type, ref T value, out int bytesWritten)
         {
             _host.CheckValue(stream, nameof(stream));
             _host.CheckValue(type, nameof(type));
@@ -870,7 +860,7 @@ namespace Microsoft.ML.Runtime.Data.IO
 
             using (var writer = codecT.OpenWriter(stream))
             {
-                writer.Write(ref value);
+                writer.Write(in value);
                 bytesWritten += (int)writer.GetCommitLengthEstimate();
                 writer.Commit();
             }
@@ -886,7 +876,7 @@ namespace Microsoft.ML.Runtime.Data.IO
         /// <param name="value">A non-null value if the type descriptor was recognized and a value
         /// read, or null if the type descriptor was not recognized</param>
         /// <returns>Whether the load of a type description and value was successful</returns>
-        public bool TryLoadTypeAndValue(Stream stream, out ColumnType type, out object value)
+        public bool TryLoadTypeAndValue(Stream stream, out DataViewType type, out object value)
         {
             _host.CheckValue(stream, nameof(stream));
 

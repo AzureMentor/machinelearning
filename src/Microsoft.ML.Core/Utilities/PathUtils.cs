@@ -5,10 +5,11 @@
 using System;
 using System.IO;
 using System.Threading;
+using Microsoft.ML.Runtime;
 
-namespace Microsoft.ML.Runtime.Internal.Utilities
+namespace Microsoft.ML.Internal.Utilities
 {
-    public static partial class Utils
+    internal static partial class Utils
     {
         /// <summary>
         /// Environment variable containing optional resources path.
@@ -21,14 +22,16 @@ namespace Microsoft.ML.Runtime.Internal.Utilities
         {
             get
             {
-                if (_dllDir == null)
+                string result = _dllDir;
+                if (result == null)
                 {
                     string path = typeof(Utils).Assembly.Location;
                     string directory = Path.GetDirectoryName(path);
                     Interlocked.CompareExchange(ref _dllDir, directory, null);
+                    result = _dllDir;
                 }
 
-                return _dllDir;
+                return result;
             }
         }
 

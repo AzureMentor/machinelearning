@@ -4,22 +4,24 @@
 
 using System.IO;
 using System.Text;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.EntryPoints;
-using Microsoft.ML.Runtime.Internal.Calibration;
-using Microsoft.ML.Runtime.Internal.Internallearn;
+using Microsoft.ML.Calibrators;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Data;
+using Microsoft.ML.EntryPoints;
+using Microsoft.ML.Model;
+using Microsoft.ML.Runtime;
 
 [assembly: EntryPointModule(typeof(SummarizePredictor))]
 
-namespace Microsoft.ML.Runtime.EntryPoints
+namespace Microsoft.ML.EntryPoints
 {
-    public static class SummarizePredictor
+    [BestFriend]
+    internal static class SummarizePredictor
     {
         public abstract class InputBase
         {
             [Argument(ArgumentType.Required, ShortName = "predictorModel", HelpText = "The predictor to summarize")]
-            public IPredictorModel PredictorModel;
+            public PredictorModel PredictorModel;
         }
 
         public sealed class Input : InputBase
@@ -43,13 +45,14 @@ namespace Microsoft.ML.Runtime.EntryPoints
             return output;
         }
 
-        public static IDataView GetSummaryAndStats(IHostEnvironment env, IPredictor predictor, RoleMappedSchema schema, out IDataView stats)
+        [BestFriend]
+        internal static IDataView GetSummaryAndStats(IHostEnvironment env, IPredictor predictor, RoleMappedSchema schema, out IDataView stats)
         {
-            var calibrated = predictor as CalibratedPredictorBase;
+            var calibrated = predictor as IWeaklyTypedCalibratedModelParameters;
             while (calibrated != null)
             {
-                predictor = calibrated.SubPredictor;
-                calibrated = predictor as CalibratedPredictorBase;
+                predictor = calibrated.WeaklyTypedSubModel;
+                calibrated = predictor as IWeaklyTypedCalibratedModelParameters;
             }
 
             IDataView summary = null;

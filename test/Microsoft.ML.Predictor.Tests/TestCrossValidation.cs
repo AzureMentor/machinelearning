@@ -2,15 +2,10 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Float = System.Single;
 
-using System;
-using Microsoft.ML.Runtime.Numeric;
-using Microsoft.ML.Runtime.CommandLine;
 
-namespace Microsoft.ML.Runtime.RunTests
+namespace Microsoft.ML.RunTests
 {
-    using TestLearners = TestLearnersBase;
 
 #if OLD_TESTS // REVIEW: Do these add any value?
     public class TestCrossValidation : BaseTestPredictorsOld
@@ -30,19 +25,19 @@ namespace Microsoft.ML.Runtime.RunTests
             int[] folds = foldCreator.CreateFoldIndicesStratified(li, cmd, new Random(1));
             int[] expectedIndices = { 1, 0, 3, 4, 2 };
             for (int i = 0; i < folds.Length; i++)
-                Assert.AreEqual<int>(folds[i], expectedIndices[i]);
+                Assert.Equal<int>(folds[i], expectedIndices[i]);
 
             li = CreateInstancesWithNKeys(7);
             folds = foldCreator.CreateFoldIndicesStratified(li, cmd, new Random(1));
             expectedIndices = new int[] { 1, 0, 4, 1, 0, 2, 3 };
             for (int i = 0; i < folds.Length; i++)
-                Assert.AreEqual<int>(folds[i], expectedIndices[i]);
+                Assert.Equal<int>(folds[i], expectedIndices[i]);
 
             li = CreateInstancesWithNKeys(10);
             folds = foldCreator.CreateFoldIndicesStratified(li, cmd, new Random(1));
             expectedIndices = new int[] { 2, 1, 0, 3, 2, 4, 0, 4, 3, 1 };
             for (int i = 0; i < folds.Length; i++)
-                Assert.AreEqual<int>(folds[i], expectedIndices[i]);
+                Assert.Equal<int>(folds[i], expectedIndices[i]);
 
             Done();
         }

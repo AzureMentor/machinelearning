@@ -2,26 +2,26 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-#pragma warning disable 420 // volatile with Interlocked.CompareExchange
-
 using System;
 using System.Collections.Generic;
 using System.IO;
+using Microsoft.ML;
+using Microsoft.ML.Command;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Data;
+using Microsoft.ML.Data.IO;
+using Microsoft.ML.Internal.Utilities;
 using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.Command;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Data.IO;
-using Microsoft.ML.Runtime.Internal.Utilities;
 
 [assembly: LoadableClass(ScoreCommand.Summary, typeof(ScoreCommand), typeof(ScoreCommand.Arguments), typeof(SignatureCommand),
     "Score Predictor", "Score")]
 
-namespace Microsoft.ML.Runtime.Data
+namespace Microsoft.ML.Data
 {
     using TScorerFactory = IComponentFactory<IDataView, ISchemaBoundMapper, RoleMappedSchema, IDataScorerTransform>;
 
-    public interface IDataScorerTransform : IDataTransform, ITransformTemplate
+    [BestFriend]
+    internal interface IDataScorerTransform : IDataTransform, ITransformTemplate
     {
     }
 
@@ -33,11 +33,13 @@ namespace Microsoft.ML.Runtime.Data
     /// <param name="trainSchema">This parameter holds a snapshot of the role mapped training schema as
     /// it existed at the point when <paramref name="mapper"/> was trained, or <c>null</c> if it not
     /// available for some reason</param>
-    public delegate void SignatureDataScorer(IDataView data, ISchemaBoundMapper mapper, RoleMappedSchema trainSchema);
+    [BestFriend]
+    internal delegate void SignatureDataScorer(IDataView data, ISchemaBoundMapper mapper, RoleMappedSchema trainSchema);
 
-    public delegate void SignatureBindableMapper(IPredictor predictor);
+    [BestFriend]
+    internal delegate void SignatureBindableMapper(IPredictor predictor);
 
-    public sealed class ScoreCommand : DataCommand.ImplBase<ScoreCommand.Arguments>
+    internal sealed class ScoreCommand : DataCommand.ImplBase<ScoreCommand.Arguments>
     {
         public sealed class Arguments : DataCommand.ArgumentsBase
         {
@@ -48,9 +50,9 @@ namespace Microsoft.ML.Runtime.Data
             public string GroupColumn = DefaultColumnNames.GroupId;
 
             [Argument(ArgumentType.Multiple,
-                HelpText = "Input columns: Columns with custom kinds declared through key assignments, e.g., col[Kind]=Name to assign column named 'Name' kind 'Kind'",
-                ShortName = "col", SortOrder = 10)]
-            public KeyValuePair<string, string>[] CustomColumn;
+                HelpText = "Input columns: Columns with custom kinds declared through key assignments, for example, col[Kind]=Name to assign column named 'Name' kind 'Kind'",
+                Name = "CustomColumn", ShortName = "col", SortOrder = 10)]
+            public KeyValuePair<string, string>[] CustomColumns;
 
             [Argument(ArgumentType.Multiple, HelpText = "Scorer to use", SignatureType = typeof(SignatureDataScorer))]
             public TScorerFactory Scorer;
@@ -70,8 +72,9 @@ namespace Microsoft.ML.Runtime.Data
             [Argument(ArgumentType.AtMostOnce, HelpText = "Whether to output all columns or just scores", ShortName = "all")]
             public bool? OutputAllColumns;
 
-            [Argument(ArgumentType.Multiple, HelpText = "What columns to output beyond score columns, if outputAllColumns=-.", ShortName = "outCol")]
-            public string[] OutputColumn;
+            [Argument(ArgumentType.Multiple, HelpText = "What columns to output beyond score columns, if outputAllColumns=-.",
+                Name = "OutputColumn", ShortName = "outCol")]
+            public string[] OutputColumns;
         }
 
         internal const string Summary = "Scores a data file.";
@@ -79,9 +82,9 @@ namespace Microsoft.ML.Runtime.Data
         public ScoreCommand(IHostEnvironment env, Arguments args)
             : base(env, args, nameof(ScoreCommand))
         {
-            Host.CheckUserArg(!string.IsNullOrWhiteSpace(Args.InputModelFile), nameof(Args.InputModelFile), "The input model file is required.");
-            Host.CheckUserArg(!string.IsNullOrWhiteSpace(Args.OutputDataFile), nameof(Args.OutputDataFile), "The output data file is required.");
-            Utils.CheckOptionalUserDirectory(Args.OutputDataFile, nameof(Args.OutputDataFile));
+            Host.CheckUserArg(!string.IsNullOrWhiteSpace(ImplOptions.InputModelFile), nameof(ImplOptions.InputModelFile), "The input model file is required.");
+            Host.CheckUserArg(!string.IsNullOrWhiteSpace(ImplOptions.OutputDataFile), nameof(ImplOptions.OutputDataFile), "The output data file is required.");
+            Utils.CheckOptionalUserDirectory(ImplOptions.OutputDataFile, nameof(ImplOptions.OutputDataFile));
         }
 
         public override void Run()
@@ -89,7 +92,6 @@ namespace Microsoft.ML.Runtime.Data
             using (var ch = Host.Start("Score"))
             {
                 RunCore(ch);
-                ch.Done();
             }
         }
 
@@ -105,39 +107,39 @@ namespace Microsoft.ML.Runtime.Data
             ch.AssertValue(loader);
 
             ch.Trace("Creating pipeline");
-            var scorer = Args.Scorer;
+            var scorer = ImplOptions.Scorer;
             ch.Assert(scorer == null || scorer is ICommandLineComponentFactory, "ScoreCommand should only be used from the command line.");
             var bindable = ScoreUtils.GetSchemaBindableMapper(Host, predictor, scorerFactorySettings: scorer as ICommandLineComponentFactory);
             ch.AssertValue(bindable);
 
             // REVIEW: We probably ought to prefer role mappings from the training schema.
             string feat = TrainUtils.MatchNameOrDefaultOrNull(ch, loader.Schema,
-                nameof(Args.FeatureColumn), Args.FeatureColumn, DefaultColumnNames.Features);
+                nameof(ImplOptions.FeatureColumn), ImplOptions.FeatureColumn, DefaultColumnNames.Features);
             string group = TrainUtils.MatchNameOrDefaultOrNull(ch, loader.Schema,
-                nameof(Args.GroupColumn), Args.GroupColumn, DefaultColumnNames.GroupId);
-            var customCols = TrainUtils.CheckAndGenerateCustomColumns(ch, Args.CustomColumn);
+                nameof(ImplOptions.GroupColumn), ImplOptions.GroupColumn, DefaultColumnNames.GroupId);
+            var customCols = TrainUtils.CheckAndGenerateCustomColumns(ch, ImplOptions.CustomColumns);
             var schema = new RoleMappedSchema(loader.Schema, label: null, feature: feat, group: group, custom: customCols, opt: true);
             var mapper = bindable.Bind(Host, schema);
 
             if (scorer == null)
                 scorer = ScoreUtils.GetScorerComponent(Host, mapper);
 
-            loader = CompositeDataLoader.ApplyTransform(Host, loader, "Scorer", scorer.ToString(),
+            loader = LegacyCompositeDataLoader.ApplyTransform(Host, loader, "Scorer", scorer.ToString(),
                 (env, view) => scorer.CreateComponent(env, view, mapper, trainSchema));
 
-            loader = CompositeDataLoader.Create(Host, loader, Args.PostTransform);
+            loader = LegacyCompositeDataLoader.Create(Host, loader, ImplOptions.PostTransform);
 
-            if (!string.IsNullOrWhiteSpace(Args.OutputModelFile))
+            if (!string.IsNullOrWhiteSpace(ImplOptions.OutputModelFile))
             {
                 ch.Trace("Saving the data pipe");
-                SaveLoader(loader, Args.OutputModelFile);
+                SaveLoader(loader, ImplOptions.OutputModelFile);
             }
 
             ch.Trace("Creating saver");
             IDataSaver writer;
-            if (Args.Saver == null)
+            if (ImplOptions.Saver == null)
             {
-                var ext = Path.GetExtension(Args.OutputDataFile);
+                var ext = Path.GetExtension(ImplOptions.OutputDataFile);
                 var isText = ext == ".txt" || ext == ".tlc";
                 if (isText)
                 {
@@ -150,55 +152,55 @@ namespace Microsoft.ML.Runtime.Data
             }
             else
             {
-                writer = Args.Saver.CreateComponent(Host);
+                writer = ImplOptions.Saver.CreateComponent(Host);
             }
             ch.Assert(writer != null);
             var outputIsBinary = writer is BinaryWriter;
 
             bool outputAllColumns =
-                Args.OutputAllColumns == true
-                || (Args.OutputAllColumns == null && Utils.Size(Args.OutputColumn) == 0 && outputIsBinary);
+                ImplOptions.OutputAllColumns == true
+                || (ImplOptions.OutputAllColumns == null && Utils.Size(ImplOptions.OutputColumns) == 0 && outputIsBinary);
 
             bool outputNamesAndLabels =
-                Args.OutputAllColumns == true || Utils.Size(Args.OutputColumn) == 0;
+                ImplOptions.OutputAllColumns == true || Utils.Size(ImplOptions.OutputColumns) == 0;
 
-            if (Args.OutputAllColumns == true && Utils.Size(Args.OutputColumn) != 0)
-                ch.Warning(nameof(Args.OutputAllColumns) + "=+ always writes all columns irrespective of " + nameof(Args.OutputColumn) + " specified.");
+            if (ImplOptions.OutputAllColumns == true && Utils.Size(ImplOptions.OutputColumns) != 0)
+                ch.Warning(nameof(ImplOptions.OutputAllColumns) + "=+ always writes all columns irrespective of " + nameof(ImplOptions.OutputColumns) + " specified.");
 
-            if (!outputAllColumns && Utils.Size(Args.OutputColumn) != 0)
+            if (!outputAllColumns && Utils.Size(ImplOptions.OutputColumns) != 0)
             {
-                foreach (var outCol in Args.OutputColumn)
+                foreach (var outCol in ImplOptions.OutputColumns)
                 {
                     if (!loader.Schema.TryGetColumnIndex(outCol, out int dummyColIndex))
-                        throw ch.ExceptUserArg(nameof(Arguments.OutputColumn), "Column '{0}' not found.", outCol);
+                        throw ch.ExceptUserArg(nameof(Arguments.OutputColumns), "Column '{0}' not found.", outCol);
                 }
             }
 
             uint maxScoreId = 0;
             if (!outputAllColumns)
-                maxScoreId = loader.Schema.GetMaxMetadataKind(out int colMax, MetadataUtils.Kinds.ScoreColumnSetId);
+                maxScoreId = loader.Schema.GetMaxAnnotationKind(out int colMax, AnnotationUtils.Kinds.ScoreColumnSetId);
             ch.Assert(outputAllColumns || maxScoreId > 0); // score set IDs are one-based
             var cols = new List<int>();
-            for (int i = 0; i < loader.Schema.ColumnCount; i++)
+            for (int i = 0; i < loader.Schema.Count; i++)
             {
-                if (!Args.KeepHidden && loader.Schema.IsHidden(i))
+                if (!ImplOptions.KeepHidden && loader.Schema[i].IsHidden)
                     continue;
                 if (!(outputAllColumns || ShouldAddColumn(loader.Schema, i, maxScoreId, outputNamesAndLabels)))
                     continue;
-                var type = loader.Schema.GetColumnType(i);
+                var type = loader.Schema[i].Type;
                 if (writer.IsColumnSavable(type))
                     cols.Add(i);
                 else
                 {
                     ch.Warning("The column '{0}' will not be written as it has unsavable column type.",
-                        loader.Schema.GetColumnName(i));
+                        loader.Schema[i].Name);
                 }
             }
 
             ch.Check(cols.Count > 0, "No valid columns to save");
 
             ch.Trace("Scoring and saving data");
-            using (var file = Host.CreateOutputFile(Args.OutputDataFile))
+            using (var file = Host.CreateOutputFile(ImplOptions.OutputDataFile))
             using (var stream = file.CreateWriteStream())
                 writer.SaveData(stream, loader, cols.ToArray());
         }
@@ -207,17 +209,17 @@ namespace Microsoft.ML.Runtime.Data
         /// Whether a column should be added, assuming it's not hidden
         /// (i.e.: this doesn't check for hidden
         /// </summary>
-        private bool ShouldAddColumn(ISchema schema, int i, uint scoreSet, bool outputNamesAndLabels)
+        private bool ShouldAddColumn(DataViewSchema schema, int i, uint scoreSet, bool outputNamesAndLabels)
         {
             uint scoreSetId = 0;
-            if (schema.TryGetMetadata(MetadataUtils.ScoreColumnSetIdType.AsPrimitive, MetadataUtils.Kinds.ScoreColumnSetId, i, ref scoreSetId)
+            if (schema.TryGetAnnotation(AnnotationUtils.ScoreColumnSetIdType, AnnotationUtils.Kinds.ScoreColumnSetId, i, ref scoreSetId)
                 && scoreSetId == scoreSet)
             {
                 return true;
             }
             if (outputNamesAndLabels)
             {
-                switch (schema.GetColumnName(i))
+                switch (schema[i].Name)
                 {
                     case "Label":
                     case "Name":
@@ -227,13 +229,14 @@ namespace Microsoft.ML.Runtime.Data
                         break;
                 }
             }
-            if (Args.OutputColumn != null && Array.FindIndex(Args.OutputColumn, schema.GetColumnName(i).Equals) >= 0)
+            if (ImplOptions.OutputColumns != null && Array.FindIndex(ImplOptions.OutputColumns, schema[i].Name.Equals) >= 0)
                 return true;
             return false;
         }
     }
 
-    public static class ScoreUtils
+    [BestFriend]
+    internal static class ScoreUtils
     {
         public static IDataScorerTransform GetScorer(IPredictor predictor, RoleMappedData data, IHostEnvironment env, RoleMappedSchema trainSchema)
         {
@@ -305,8 +308,8 @@ namespace Microsoft.ML.Runtime.Data
 
             ComponentCatalog.LoadableClassInfo info = null;
             ReadOnlyMemory<char> scoreKind = default;
-            if (mapper.Schema.ColumnCount > 0 &&
-                mapper.Schema.TryGetMetadata(TextType.Instance, MetadataUtils.Kinds.ScoreColumnKind, 0, ref scoreKind) &&
+            if (mapper.OutputSchema.Count > 0 &&
+                mapper.OutputSchema.TryGetAnnotation(TextDataViewType.Instance, AnnotationUtils.Kinds.ScoreColumnKind, 0, ref scoreKind) &&
                 !scoreKind.IsEmpty)
             {
                 var loadName = scoreKind.ToString();

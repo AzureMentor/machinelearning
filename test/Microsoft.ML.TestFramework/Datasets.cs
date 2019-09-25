@@ -2,7 +2,10 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-namespace Microsoft.ML.Runtime.RunTests
+using System;
+using Microsoft.ML.Data;
+
+namespace Microsoft.ML.RunTests
 {
     public class TestDataset
     {
@@ -11,6 +14,9 @@ namespace Microsoft.ML.Runtime.RunTests
         public string testFilename;
         public string validFilename;
         public string labelFilename;
+        public char fileSeparator;
+        public bool fileHasHeader;
+        public bool allowQuoting;
 
         // REVIEW: Replace these with appropriate SubComponents!
         public string settings;
@@ -19,6 +25,7 @@ namespace Microsoft.ML.Runtime.RunTests
         // REVIEW: Remove the three above setting strings once conversion work is complete.
         public string loaderSettings;
         public string[] mamlExtraSettings;
+        public Func<TextLoader.Column[]> GetLoaderColumns;
 
         public TestDataset Clone()
         {
@@ -133,6 +140,15 @@ namespace Microsoft.ML.Runtime.RunTests
             loaderSettings = "xf=expr{col=Features expr=x:float(x>4?1:0)}"
         };
 
+        // The data set contains images of hand-written digits.
+        // The input is given in the form of matrix id 8x8 where
+        // each element is an integer in the range 0..16
+        public static TestDataset Digits = new TestDataset
+        {
+            name = "Digits",
+            trainFilename = @"external/digits.csv",
+        };
+
         public static TestDataset vw = new TestDataset
         {
             name = "vw",
@@ -144,7 +160,27 @@ namespace Microsoft.ML.Runtime.RunTests
         {
             name = "housing",
             trainFilename = "housing.txt",
-            testFilename = "housing.txt"
+            testFilename = "housing.txt",
+            fileSeparator = '\t',
+            fileHasHeader = true,
+            loaderSettings = "loader=Text{col=Label:0 col=Features:~ header=+}",
+            GetLoaderColumns = () =>
+            {
+                return new[] {
+                    new TextLoader.Column("MedianHomeValue", DataKind.Single, 0),
+                    new TextLoader.Column("CrimesPerCapita", DataKind.Single, 1),
+                    new TextLoader.Column("PercentResidental", DataKind.Single, 2),
+                    new TextLoader.Column("PercentNonRetail", DataKind.Single, 3),
+                    new TextLoader.Column("CharlesRiver", DataKind.Single, 4),
+                    new TextLoader.Column("NitricOxides", DataKind.Single, 5),
+                    new TextLoader.Column("RoomsPerDwelling", DataKind.Single, 6),
+                    new TextLoader.Column("PercentPre40s", DataKind.Single, 7),
+                    new TextLoader.Column("EmploymentDistance", DataKind.Single, 8),
+                    new TextLoader.Column("HighwayDistance", DataKind.Single, 9),
+                    new TextLoader.Column("TaxRate", DataKind.Single, 10),
+                    new TextLoader.Column("TeacherRatio", DataKind.Single, 11),
+                };
+            }
         };
 
         public static TestDataset generatedRegressionDatasetmacro = new TestDataset
@@ -174,7 +210,18 @@ namespace Microsoft.ML.Runtime.RunTests
         {
             name = "sentiment",
             trainFilename = "wikipedia-detox-250-line-data.tsv",
-            testFilename = "wikipedia-detox-250-line-test.tsv"
+            testFilename = "wikipedia-detox-250-line-test.tsv",
+            fileHasHeader = true,
+            fileSeparator = '\t',
+            allowQuoting = true,
+            GetLoaderColumns = () =>
+             {
+                 return new[]
+                 {
+                    new TextLoader.Column("Label", DataKind.Boolean, 0),
+                    new TextLoader.Column("SentimentText", DataKind.String, 1)
+                 };
+             }
         };
 
         public static TestDataset generatedRegressionDataset = new TestDataset
@@ -229,9 +276,11 @@ namespace Microsoft.ML.Runtime.RunTests
         public static TestDataset adult = new TestDataset
         {
             name = "Census",
-            trainFilename = "adult.train",
-            testFilename = "adult.test",
-            loaderSettings = "loader=Text{sep=, header+ col=Label:14 col=Num:0,2,4,10-12 col=Cat:TX:1,3,5-9,13}",
+            trainFilename = "adult.tiny.with-schema.txt",
+            testFilename = "adult.tiny.with-schema.txt",
+            fileHasHeader = true,
+            fileSeparator = '\t',
+            loaderSettings = "loader=Text{header+ col=Label:0 col=Num:9-14 col=Cat:TX:1-8}",
             mamlExtraSettings = new[] { "xf=Cat{col=Cat}", "xf=Concat{col=Features:Num,Cat}" },
             extraSettings = @"/inst Text{header+ sep=, label=14 handler=Categorical{cols=5-9,1,13,3}}",
         };
@@ -239,9 +288,9 @@ namespace Microsoft.ML.Runtime.RunTests
         public static TestDataset adultOnlyCat = new TestDataset
         {
             name = "Census-Cat-Only",
-            trainFilename = "adult.train",
-            testFilename = "adult.test",
-            loaderSettings = "loader=Text{sep=, header+ col=Label:14 col=Cat:TX:1,3,5-9,13}",
+            trainFilename = "adult.tiny.with-schema.txt",
+            testFilename = "adult.tiny.with-schema.txt",
+            loaderSettings = "loader=Text{header+ col=Label:0 col=Cat:TX:1-8}",
             mamlExtraSettings = new[] { "xf=Cat{col=Cat}", "xf=Concat{col=Features:Cat}" },
             extraSettings = @"/inst Text{header+ sep=, label=14 handler=Categorical{cols=5-9,1,13,3}}",
         };
@@ -249,38 +298,28 @@ namespace Microsoft.ML.Runtime.RunTests
         public static TestDataset adultHash = new TestDataset
         {
             name = "CensusHash",
-            trainFilename = "adult.train",
-            testFilename = "adult.test",
-            loaderSettings = "loader=Text{sep=, header+ col=Label:14 col=Num:0,2,4,10-12 col=Cat:TX:1,3,5-9,13}",
+            trainFilename = "adult.tiny.with-schema.txt",
+            testFilename = "adult.tiny.with-schema.txt",
+            loaderSettings = "loader=Text{header+ col=Label:0 col=Num:9-14 col=Cat:TX:1-8}",
             mamlExtraSettings = new[] { "xf=CatHash{col=Cat bits=5}", "xf=Concat{col=Features:Num,Cat}" },
             extraSettings = @"/inst Text{header+ sep=, label=14 handler=CatHash{cols=1,3,5-9,13 bits=5}}"
-        };
-
-        public static TestDataset adultCharGram = new TestDataset
-        {
-            name = "CensusCharGram",
-            trainFilename = "adult.train",
-            testFilename = "adult.test",
-            extraSettings = @"/inst Text{header+ sep=, label=14 handler=CharGram{cols=1,3,5-9,13 len=2} handler=CharGram{cols=1,3,5-9,13 len=3} handler=CharGram{cols=1,3,5-9,13 len=4} " +
-            "handler=CharGram{cols=1,3,5-9,13 len=2 lower=-} handler=CharGram{cols=1,3,5-9,13 len=3 lower=-} handler=CharGram{cols=1,3,5-9,13 len=4 lower=-}}"
         };
 
         public static TestDataset adultHashWithDataPipe = new TestDataset
         {
             name = "CensusHashWithPipe",
-            trainFilename = "adult.train",
-            testFilename = "adult.test",
-            loaderSettings = "loader=Text{header+ sep=comma col=Cat:TX:1,3,5-9,13 col=Label:14 col=Num:~}",
-            mamlExtraSettings = new[] { "xf=CatHash{col=Hash:5:Cat}", "xf=Concat{col=Features:Num,Hash}" },
-            extraSettings = @"/inst Pipe{loader=Text{header+ sep=comma col=Cat:TX:1,3,5-9,13 col=Label:14 col=Num:0,2,4,10-12} xf=CatHash{col=Hash:5:Cat} xf=Concat{col=Features:Num,Hash}}"
+            trainFilename = "adult.tiny.with-schema.txt",
+            testFilename = "adult.tiny.with-schema.txt",
+            loaderSettings = "loader=Text{header+ col=Cat:TX:1-8 col=Label:0 col=Num:~}",
+            mamlExtraSettings = new[] { "xf=CatHash{col=Hash:5:Cat}", "xf=Concat{col=Features:Num,Hash}" }
         };
 
         public static TestDataset adultText = new TestDataset
         {
             name = "CensusText",
-            trainFilename = "adult.train",
-            testFilename = "adult.test",
-            loaderSettings = "loader=Text{header+ sep=, col=Label:14 col=Word:TX:1,3,5-9,13 col=Num:~}",
+            trainFilename = "adult.tiny.with-schema.txt",
+            testFilename = "adult.tiny.with-schema.txt",
+            loaderSettings = "loader=Text{header+ col=Label:0 col=Word:TX:1-8 col=Num:~}",
             mamlExtraSettings = new[] { "xf=WordBag{col=Word}", "xf=Concat{col=Features:Num,Word}" },
             extraSettings = @"/inst Text{header+ sep=, label=14 handler=WordBag{cols=1,3,5-9,13}}"
         };
@@ -288,30 +327,11 @@ namespace Microsoft.ML.Runtime.RunTests
         public static TestDataset adultTextHash = new TestDataset
         {
             name = "CensusTextHash",
-            trainFilename = "adult.train",
-            testFilename = "adult.test",
-            loaderSettings = "loader=Text{header+ sep=, col=Label:14 col=Word:TX:1,3,5-9,13 col=Num:~}",
+            trainFilename = "adult.tiny.with-schema.txt",
+            testFilename = "adult.tiny.with-schema.txt",
+            loaderSettings = "loader=Text{header+ col=Label:0 col=Word:TX:1-8 col=Num:~}",
             mamlExtraSettings = new[] { "xf=WordHashBag{col=Word bits=8}", "xf=Concat{col=Features:Num,Word}" },
             extraSettings = @"/inst Text{header+ sep=, label=14 handler=WordHashBag{cols=1,3,5-9,13 sep=, bits=8}}"
-        };
-
-        // Has all the valid ways of specifying handlers with overlaps. Even includes attr and name columns.
-        public static TestDataset adultHashWithAttr = new TestDataset
-        {
-            name = "CensusHashWithAttr",
-            trainFilename = "adult.train",
-            testFilename = "adult.test",
-            loaderSettings = "loader=Text{header+ sep=, col=Label:14 col=Attr:TX:1 col=Name:TX:3 col=Cat1:TX:8,9 col=Cat2:TX:1 col=CatHash1:TX:1 col=CatHash2:TX:5-8 col=TextHash:TX:3,13 col=Num:~}",
-            mamlExtraSettings = new[] { "xf=Cat{col=Cat1 col=Cat2}", "xf=CatHash{col=CatHash1:5:CatHash1 col=CatHash2:6:CatHash2}", "xf=WordHashBag{col=TextHash:8:TextHash}", "xf=Concat{col=Features:Num,Cat1,CatHash1,TextHash,CatHash2,Cat2}" },
-            extraSettings = @"/inst TextInstances {header+ sep=, label=14 attr=1 name=3 cat=8,9 handler=CatHash{cols=1 bits=5} handler=TextHash{cols=3,13 bits=8 seed=2} handler=CatHash{cols=5-8 bits=6} handler=Categorical{cols=1}}"
-        };
-
-        public static TestDataset adultCatAsAtt = new TestDataset
-        {
-            name = "CensusCat2Ordinal",
-            trainFilename = "adult.train",
-            testFilename = "adult.test",
-            extraSettings = @"/inst Text{header+ sep=, label=14 attr=5-9,1,13,3 threads-}"
         };
 
         public static TestDataset adultRanking = new TestDataset
@@ -383,7 +403,18 @@ namespace Microsoft.ML.Runtime.RunTests
         {
             name = "iris",
             trainFilename = @"iris.data",
-            loaderSettings = "loader=Text{col=Label:TX:4 col=Features:0-3}"
+            loaderSettings = "loader=Text{col=Label:TX:4 col=Features:0-3}",
+            GetLoaderColumns = () =>
+            {
+                return new[]
+                {
+                    new TextLoader.Column("SepalLength", DataKind.Single, 0),
+                    new TextLoader.Column("SepalWidth", DataKind.Single, 1),
+                    new TextLoader.Column("PetalLength", DataKind.Single, 2),
+                    new TextLoader.Column("PetalWidth",DataKind.Single, 3),
+                    new TextLoader.Column("Label", DataKind.String, 4)
+                };
+            }
         };
 
         public static TestDataset irisLabelName = new TestDataset()
@@ -418,7 +449,7 @@ namespace Microsoft.ML.Runtime.RunTests
             name = "iris",
             trainFilename = @"iris.txt",
             testFilename = @"iris.txt",
-            loaderSettings = "loader=Text{col=Label:U4[0-4]:0 col=Features:1-4}",
+            loaderSettings = "loader=Text{col=Label:U4[0-2]:0 col=Features:1-4}",
         };
 
         public static TestDataset iris = new TestDataset()
@@ -426,6 +457,16 @@ namespace Microsoft.ML.Runtime.RunTests
             name = "iris",
             trainFilename = @"iris.txt",
             testFilename = @"iris.txt",
+            fileHasHeader = true,
+            fileSeparator = '\t',
+            mamlExtraSettings = new[] { "xf=Term{col=Label}" }
+        };
+
+        public static TestDataset irisDb = new TestDataset()
+        {
+            name = "iris",
+            trainFilename = @"iris-train",
+            testFilename = @"iris-test",
         };
 
         public static TestDataset irisMissing = new TestDataset()
@@ -634,6 +675,8 @@ namespace Microsoft.ML.Runtime.RunTests
             name = "mnistOneClass",
             trainFilename = @"MNIST.Train.0-class.tiny.txt",
             testFilename = @"MNIST.Test.tiny.txt",
+            fileHasHeader = false,
+            fileSeparator = '\t',
             settings = ""
         };
 
@@ -676,6 +719,16 @@ namespace Microsoft.ML.Runtime.RunTests
             trainFilename = @"..\V3\Data\OCR\train.tsv",
             testFilename = @"..\V3\Data\OCR\train.tsv",
             loaderSettings = "loader=Text{col=Label:U1[0-25]:1 col=GroupId:U4[1-*]:3 col=Features:Num:4-*}"
+        };
+
+        public static TestDataset trivialMatrixFactorization = new TestDataset()
+        {
+            name = "trivialMatrixFactorization",
+            trainFilename = @"trivial-train.tsv",
+            testFilename = @"trivial-test.tsv",
+            fileHasHeader = true,
+            fileSeparator = '\t',
+            loaderSettings = "loader=Text{col=Label:R4:0 col=User:U4[0-19]:1 col=Item:U4[0-39]:2 header+}"
         };
     }
 }

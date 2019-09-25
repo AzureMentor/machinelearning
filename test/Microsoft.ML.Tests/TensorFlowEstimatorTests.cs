@@ -1,23 +1,26 @@
-﻿// Licensed to the .NET Foundation under one or more agreements.
+// Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Microsoft.ML.Core.Data;
-using Microsoft.ML.Runtime.Api;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.ImageAnalytics;
-using Microsoft.ML.Runtime.Model;
-using Microsoft.ML.Runtime.RunTests;
-using Microsoft.ML.Runtime.Tools;
-using Microsoft.ML.Transforms;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using Microsoft.ML.Data;
+using Microsoft.ML.Model;
+using Microsoft.ML.RunTests;
+using Microsoft.ML.TestFramework.Attributes;
+using Microsoft.ML.Tools;
+using Microsoft.ML.Transforms;
+using Microsoft.ML.Transforms.TensorFlow;
 using Xunit;
 using Xunit.Abstractions;
 
 namespace Microsoft.ML.Tests
 {
+    [CollectionDefinition("NoParallelization", DisableParallelization = true)]
+    public class NoParallelizationCollection { }
+
+    [Collection("NoParallelization")]
     public class TensorFlowEstimatorTests : TestDataPipeBase
     {
         private class TestData
@@ -53,12 +56,12 @@ namespace Microsoft.ML.Tests
         {
         }
 
-        [Fact]
+        [TensorFlowFact]
         void TestSimpleCase()
         {
             var modelFile = "model_matmul/frozen_saved_model.pb";
 
-            var dataView = ComponentCreation.CreateDataView(Env,
+            var dataView = ML.Data.LoadFromEnumerable(
                 new List<TestData>(new TestData[] {
                     new TestData()
                     {
@@ -75,11 +78,11 @@ namespace Microsoft.ML.Tests
             var xyData = new List<TestDataXY> { new TestDataXY() { A = new float[4], B = new float[4] } };
             var stringData = new List<TestDataDifferntType> { new TestDataDifferntType() { a = new string[4], b = new string[4] } };
             var sizeData = new List<TestDataSize> { new TestDataSize() { a = new float[2], b = new float[2] } };
-            var pipe = new TensorFlowEstimator(Env, modelFile, new[] { "a", "b" }, new[] { "c" });
+            var pipe = ML.Model.LoadTensorFlowModel(modelFile).ScoreTensorFlowModel(new[] { "c" }, new[] { "a", "b" });
 
-            var invalidDataWrongNames = ComponentCreation.CreateDataView(Env, xyData);
-            var invalidDataWrongTypes = ComponentCreation.CreateDataView(Env, stringData);
-            var invalidDataWrongVectorSize = ComponentCreation.CreateDataView(Env, sizeData);
+            var invalidDataWrongNames = ML.Data.LoadFromEnumerable(xyData);
+            var invalidDataWrongTypes = ML.Data.LoadFromEnumerable( stringData);
+            var invalidDataWrongVectorSize = ML.Data.LoadFromEnumerable( sizeData);
             TestEstimatorCore(pipe, dataView, invalidInput: invalidDataWrongNames);
             TestEstimatorCore(pipe, dataView, invalidInput: invalidDataWrongTypes);
 
@@ -93,12 +96,12 @@ namespace Microsoft.ML.Tests
             catch (InvalidOperationException) { }
         }
 
-        [Fact]
+        [TensorFlowFact]
         void TestOldSavingAndLoading()
         {
             var modelFile = "model_matmul/frozen_saved_model.pb";
 
-            var dataView = ComponentCreation.CreateDataView(Env,
+            var dataView = ML.Data.LoadFromEnumerable(
                 new List<TestData>(new TestData[] {
                     new TestData()
                     {
@@ -116,7 +119,7 @@ namespace Microsoft.ML.Tests
                         b = new[] { 10.0f, 8.0f, 6.0f, 6.0f }
                     }
                 }));
-            var est = new TensorFlowEstimator(Env, modelFile, new[] { "a", "b" }, new[] { "c" });
+            var est = ML.Model.LoadTensorFlowModel(modelFile).ScoreTensorFlowModel(new[] { "c" }, new[] { "a", "b" });
             var transformer = est.Fit(dataView);
             var result = transformer.Transform(dataView);
             var resultRoles = new RoleMappedData(result);
@@ -129,83 +132,124 @@ namespace Microsoft.ML.Tests
             }
         }
 
-        [Fact]
+        [TensorFlowFact]
         void TestCommandLine()
         {
-            using (var env = new ConsoleEnvironment())
-            {
-                Assert.Equal(Maml.Main(new[] { @"showschema loader=Text{col=a:R4:0-3 col=b:R4:0-3} xf=TFTransform{inputs=a inputs=b outputs=c model={model_matmul/frozen_saved_model.pb}}"}), (int)0);
-            }
+            // typeof helps to load the TensorFlowTransformer type.
+            Type type = typeof(TensorFlowTransformer);
+            Assert.Equal(Maml.Main(new[] { @"showschema loader=Text{col=a:R4:0-3 col=b:R4:0-3} xf=TFTransform{inputs=a inputs=b outputs=c modellocation={model_matmul/frozen_saved_model.pb}}" }), (int)0);
         }
 
-        [Fact]
-        public void TestTensorFlowStatic()
+        [TensorFlowFact]
+        public void TestTensorFlow()
         {
             var modelLocation = "cifar_model/frozen_model.pb";
 
-            using (var env = new ConsoleEnvironment())
+            var mlContext = new MLContext(seed: 1);
+            var imageHeight = 32;
+            var imageWidth = 32;
+            var dataFile = GetDataPath("images/images.tsv");
+            var imageFolder = Path.GetDirectoryName(dataFile);
+
+            var data = ML.Data.LoadFromTextFile(dataFile, new[] {
+                new TextLoader.Column("imagePath", DataKind.String, 0),
+                new TextLoader.Column("name", DataKind.String, 1)
+            });
+
+            // Note that CamelCase column names are there to match the TF graph node names.
+            var pipe = ML.Transforms.LoadImages("Input", imageFolder, "imagePath")
+                .Append(ML.Transforms.ResizeImages("Input", imageHeight, imageWidth))
+                .Append(ML.Transforms.ExtractPixels("Input", interleavePixelColors: true))
+                .Append(ML.Model.LoadTensorFlowModel(modelLocation).ScoreTensorFlowModel("Output", "Input"));
+
+            TestEstimatorCore(pipe, data);
+
+            var result = pipe.Fit(data).Transform(data);
+            result.Schema.TryGetColumnIndex("Output", out int output);
+            using (var cursor = result.GetRowCursor(result.Schema["Output"]))
             {
-                var imageHeight = 32;
-                var imageWidth = 32;
-                var dataFile = GetDataPath("images/images.tsv");
-                var imageFolder = Path.GetDirectoryName(dataFile);
-
-                var data = TextLoader.CreateReader(env, ctx => (
-                    imagePath: ctx.LoadText(0),
-                    name: ctx.LoadText(1)))
-                    .Read(new MultiFileSource(dataFile));
-
-                // Note that CamelCase column names are there to match the TF graph node names.
-                var pipe = data.MakeNewEstimator()
-                    .Append(row => (
-                        row.name,
-                        Input: row.imagePath.LoadAsImage(imageFolder).Resize(imageHeight, imageWidth).ExtractPixels(interleaveArgb: true)))
-                    .Append(row => (row.name, Output: row.Input.ApplyTensorFlowGraph(modelLocation)));
-
-                TestEstimatorCore(pipe.AsDynamic, data.AsDynamic);
-
-                var result = pipe.Fit(data).Transform(data).AsDynamic;
-                result.Schema.TryGetColumnIndex("Output", out int output);
-                using (var cursor = result.GetRowCursor(col => col == output))
+                var buffer = default(VBuffer<float>);
+                var getter = cursor.GetGetter<VBuffer<float>>(result.Schema["Output"]);
+                var numRows = 0;
+                while (cursor.MoveNext())
                 {
-                    var buffer = default(VBuffer<float>);
-                    var getter = cursor.GetGetter<VBuffer<float>>(output);
-                    var numRows = 0;
-                    while (cursor.MoveNext())
-                    {
-                        getter(ref buffer);
-                        Assert.Equal(10, buffer.Length);
-                        numRows += 1;
-                    }
-                    Assert.Equal(3, numRows);
+                    getter(ref buffer);
+                    Assert.Equal(10, buffer.Length);
+                    numRows += 1;
                 }
+                Assert.Equal(4, numRows);
             }
         }
 
+        [TensorFlowFact]
+        public void TestTensorFlowWithSchema()
+        {
+            const string modelLocation = "cifar_model/frozen_model.pb";
+
+            var mlContext = new MLContext(seed: 1);
+            var tensorFlowModel = TensorFlowUtils.LoadTensorFlowModel(mlContext, modelLocation);
+            var schema = tensorFlowModel.GetInputSchema();
+            Assert.True(schema.TryGetColumnIndex("Input", out int column));
+            var type = (VectorDataViewType)schema[column].Type;
+            var imageHeight = type.Dimensions[0];
+            var imageWidth = type.Dimensions[1];
+
+            var dataFile = GetDataPath("images/images.tsv");
+            var imageFolder = Path.GetDirectoryName(dataFile);
+
+            var data = ML.Data.LoadFromTextFile(dataFile, new[] {
+                new TextLoader.Column("imagePath", DataKind.String, 0),
+                new TextLoader.Column("name", DataKind.String, 1)
+            });
+
+            // Note that CamelCase column names are there to match the TF graph node names.
+            var pipe = ML.Transforms.LoadImages("Input", imageFolder, "imagePath")
+                .Append(ML.Transforms.ResizeImages("Input", imageHeight, imageWidth))
+                .Append(ML.Transforms.ExtractPixels("Input", interleavePixelColors: true))
+                .Append(tensorFlowModel.ScoreTensorFlowModel("Output", "Input"));
+
+            TestEstimatorCore(pipe, data);
+
+            var result = pipe.Fit(data).Transform(data);
+            result.Schema.TryGetColumnIndex("Output", out int output);
+            using (var cursor = result.GetRowCursor(result.Schema["Output"]))
+            {
+                var buffer = default(VBuffer<float>);
+                var getter = cursor.GetGetter<VBuffer<float>>(result.Schema["Output"]);
+                var numRows = 0;
+                while (cursor.MoveNext())
+                {
+                    getter(ref buffer);
+                    Assert.Equal(10, buffer.Length);
+                    numRows += 1;
+                }
+                Assert.Equal(4, numRows);
+            }
+        }
 
         private void ValidateTensorFlowTransformer(IDataView result)
         {
-            result.Schema.TryGetColumnIndex("a", out int ColA);
-            result.Schema.TryGetColumnIndex("b", out int ColB);
-            result.Schema.TryGetColumnIndex("c", out int ColC);
-            using (var cursor = result.GetRowCursor(x => true))
+            using (var cursor = result.GetRowCursorForAllColumns())
             {
                 VBuffer<float> avalue = default;
                 VBuffer<float> bvalue = default;
                 VBuffer<float> cvalue = default;
 
-                var aGetter = cursor.GetGetter<VBuffer<float>>(ColA);
-                var bGetter = cursor.GetGetter<VBuffer<float>>(ColB);
-                var cGetter = cursor.GetGetter<VBuffer<float>>(ColC);
+                var aGetter = cursor.GetGetter<VBuffer<float>>(result.Schema["a"]);
+                var bGetter = cursor.GetGetter<VBuffer<float>>(result.Schema["b"]);
+                var cGetter = cursor.GetGetter<VBuffer<float>>(result.Schema["c"]);
                 while (cursor.MoveNext())
                 {
                     aGetter(ref avalue);
                     bGetter(ref bvalue);
                     cGetter(ref cvalue);
-                    Assert.Equal(avalue.Values[0] * bvalue.Values[0] + avalue.Values[1] * bvalue.Values[2], cvalue.Values[0]);
-                    Assert.Equal(avalue.Values[0] * bvalue.Values[1] + avalue.Values[1] * bvalue.Values[3], cvalue.Values[1]);
-                    Assert.Equal(avalue.Values[2] * bvalue.Values[0] + avalue.Values[3] * bvalue.Values[2], cvalue.Values[2]);
-                    Assert.Equal(avalue.Values[2] * bvalue.Values[1] + avalue.Values[3] * bvalue.Values[3], cvalue.Values[3]);
+                    var aValues = avalue.GetValues();
+                    var bValues = bvalue.GetValues();
+                    var cValues = cvalue.GetValues();
+                    Assert.Equal(aValues[0] * bValues[0] + aValues[1] * bValues[2], cValues[0]);
+                    Assert.Equal(aValues[0] * bValues[1] + aValues[1] * bValues[3], cValues[1]);
+                    Assert.Equal(aValues[2] * bValues[0] + aValues[3] * bValues[2], cValues[2]);
+                    Assert.Equal(aValues[2] * bValues[1] + aValues[3] * bValues[3], cValues[3]);
                 }
             }
         }

@@ -3,21 +3,21 @@
 // See the LICENSE file in the project root for more information.
 
 using System;
+using Microsoft.ML;
+using Microsoft.ML.Data;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Numeric;
 using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Ensemble.OutputCombiners;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Runtime.Model;
-using Microsoft.ML.Runtime.Numeric;
+using Microsoft.ML.Trainers.Ensemble;
 
 [assembly: LoadableClass(typeof(MultiVoting), null, typeof(SignatureCombiner), Voting.UserName, MultiVoting.LoadName)]
 [assembly: LoadableClass(typeof(MultiVoting), null, typeof(SignatureLoadModel), Voting.UserName, MultiVoting.LoaderSignature)]
 
-namespace Microsoft.ML.Runtime.Ensemble.OutputCombiners
+namespace Microsoft.ML.Trainers.Ensemble
 {
     // REVIEW: Why is MultiVoting based on BaseMultiCombiner? Normalizing the model outputs
     // is senseless, so the base adds no real functionality.
-    public sealed class MultiVoting : BaseMultiCombiner, ICanSaveModel
+    internal sealed class MultiVoting : BaseMultiCombiner
     {
         public const string LoadName = "MultiVoting";
         public const string LoaderSignature = "MultiVotingCombiner";
@@ -33,7 +33,7 @@ namespace Microsoft.ML.Runtime.Ensemble.OutputCombiners
                 loaderAssemblyName: typeof(MultiVoting).Assembly.FullName);
         }
 
-        private sealed class Arguments : ArgumentsBase
+        private sealed class Arguments : OptionsBase
         {
         }
 
@@ -77,34 +77,32 @@ namespace Microsoft.ML.Runtime.Ensemble.OutputCombiners
             int count = Utils.Size(src);
             if (count == 0)
             {
-                dst = new VBuffer<Single>(0, dst.Values, dst.Indices);
+                VBufferUtils.Resize(ref dst, 0);
                 return;
             }
 
             int len = GetClassCount(src);
-            var values = dst.Values;
-            if (Utils.Size(values) < len)
-                values = new Single[len];
-            else
-                Array.Clear(values, 0, len);
+            var editor = VBufferEditor.Create(ref dst, len);
+            if (!editor.CreatedNewValues)
+                editor.Values.Clear();
 
             int voteCount = 0;
             for (int i = 0; i < count; i++)
             {
-                int index = VectorUtils.ArgMax(ref src[i]);
+                int index = VectorUtils.ArgMax(in src[i]);
                 if (index >= 0)
                 {
-                    values[index]++;
+                    editor.Values[index]++;
                     voteCount++;
                 }
             }
 
             // Normalize by dividing by the number of votes.
             for (int i = 0; i < len; i++)
-                values[i] /= voteCount;
+                editor.Values[i] /= voteCount;
 
             // Set the output to values.
-            dst = new VBuffer<Single>(len, values, dst.Indices);
+            dst = editor.Commit();
         }
     }
 }

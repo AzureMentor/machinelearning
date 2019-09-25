@@ -5,7 +5,7 @@
 using System;
 using System.IO;
 
-namespace Microsoft.ML.Runtime.Data.IO
+namespace Microsoft.ML.Data.IO
 {
     /// <summary>
     /// A value codec encapsulates implementations capable of writing and reading data of some
@@ -37,7 +37,7 @@ namespace Microsoft.ML.Runtime.Data.IO
         /// <summary>
         /// The column type for this codec.
         /// </summary>
-        ColumnType Type { get; }
+        DataViewType Type { get; }
     }
 
     /// <summary>
@@ -100,13 +100,13 @@ namespace Microsoft.ML.Runtime.Data.IO
         /// <summary>
         /// Writes a single value to the writer.
         /// </summary>
-        void Write(ref T value);
+        void Write(in T value);
 
         /// <summary>
-        /// Writes an array of values. This should be equivalent to writing each element
+        /// Writes a span of values. This should be equivalent to writing each element
         /// singly, though possibly more efficient than such a naive implementation.
         /// </summary>
-        void Write(T[] values, int index, int count);
+        void Write(ReadOnlySpan<T> values);
     }
 
     /// <summary>

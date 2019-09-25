@@ -3,16 +3,16 @@
 // See the LICENSE file in the project root for more information.
 
 using System;
-using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Internal.Utilities;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Runtime;
 
-namespace Microsoft.ML.Runtime.EntryPoints
+namespace Microsoft.ML.EntryPoints
 {
-    public static class EntryPointUtils
+    [BestFriend]
+    internal static class EntryPointUtils
     {
         private static bool IsValueWithinRange<T>(TlcModule.RangeAttribute range, object obj)
         {
@@ -43,7 +43,7 @@ namespace Microsoft.ML.Runtime.EntryPoints
         }
 
         /// <summary>
-        /// Performs checks on an EntryPoint input class equivilent to the checks that are done
+        /// Performs checks on an EntryPoint input class equivalent to the checks that are done
         /// when parsing a JSON EntryPoint graph.
         ///
         /// Call this method from EntryPoint methods to ensure that range and required checks are performed
@@ -51,7 +51,7 @@ namespace Microsoft.ML.Runtime.EntryPoints
         /// </summary>
         public static void CheckInputArgs(IExceptionContext ectx, object args)
         {
-            foreach (var fieldInfo in args.GetType().GetFields())
+            foreach (var fieldInfo in args.GetType().GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
             {
                 var attr = fieldInfo.GetCustomAttributes(typeof(ArgumentAttribute), false).FirstOrDefault()
                     as ArgumentAttribute;
@@ -101,7 +101,7 @@ namespace Microsoft.ML.Runtime.EntryPoints
         /// and the column name was explicitly specified. If the column is not found
         /// and the column name was not explicitly specified, it returns null.
         /// </summary>
-        public static string FindColumnOrNull(IExceptionContext ectx, ISchema schema, Optional<string> value)
+        public static string FindColumnOrNull(IExceptionContext ectx, DataViewSchema schema, Optional<string> value)
         {
             Contracts.CheckValueOrNull(ectx);
             ectx.CheckValue(schema, nameof(schema));
@@ -109,8 +109,7 @@ namespace Microsoft.ML.Runtime.EntryPoints
 
             if (value == "")
                 return null;
-            int col;
-            if (!schema.TryGetColumnIndex(value, out col))
+            if (schema.GetColumnOrNull(value) == null)
             {
                 if (value.IsExplicit)
                     throw ectx.Except("Column '{0}' not found", value);

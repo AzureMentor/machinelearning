@@ -3,19 +3,19 @@
 // See the LICENSE file in the project root for more information.
 
 using System;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Runtime.Model;
-using Microsoft.ML.Runtime.Numeric;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Data;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Numeric;
+using Microsoft.ML.Runtime;
 
-namespace Microsoft.ML.Runtime.Ensemble.OutputCombiners
+namespace Microsoft.ML.Trainers.Ensemble
 {
-    public abstract class BaseMultiCombiner : IMultiClassOutputCombiner
+    internal abstract class BaseMultiCombiner : IMulticlassOutputCombiner, ICanSaveModel
     {
         protected readonly IHost Host;
 
-        public abstract class ArgumentsBase
+        public abstract class OptionsBase
         {
             [Argument(ArgumentType.AtMostOnce, HelpText = "Whether to normalize the output of base models before combining them",
                 ShortName = "norm", SortOrder = 50)]
@@ -24,14 +24,14 @@ namespace Microsoft.ML.Runtime.Ensemble.OutputCombiners
 
         protected readonly bool Normalize;
 
-        internal BaseMultiCombiner(IHostEnvironment env, string name, ArgumentsBase args)
+        internal BaseMultiCombiner(IHostEnvironment env, string name, OptionsBase options)
         {
             Contracts.AssertValue(env);
             env.AssertNonWhiteSpace(name);
             Host = env.Register(name);
-            Host.CheckValue(args, nameof(args));
+            Host.CheckValue(options, nameof(options));
 
-            Normalize = args.Normalize;
+            Normalize = options.Normalize;
         }
 
         internal BaseMultiCombiner(IHostEnvironment env, string name, ModelLoadContext ctx)
@@ -49,7 +49,7 @@ namespace Microsoft.ML.Runtime.Ensemble.OutputCombiners
             Normalize = ctx.Reader.ReadBoolByte();
         }
 
-        public void Save(ModelSaveContext ctx)
+        void ICanSaveModel.Save(ModelSaveContext ctx)
         {
             Host.CheckValue(ctx, nameof(ctx));
             ctx.CheckAtModel();
@@ -86,7 +86,7 @@ namespace Microsoft.ML.Runtime.Ensemble.OutputCombiners
             for (int i = 0; i < values.Length; i++)
             {
                 // Leave a zero vector as all zeros. Otherwise, make the L1 norm equal to 1.
-                var sum = VectorUtils.L1Norm(ref values[i]);
+                var sum = VectorUtils.L1Norm(in values[i]);
                 if (!FloatUtils.IsFinite(sum))
                     return false;
                 if (sum > 0)
@@ -98,12 +98,10 @@ namespace Microsoft.ML.Runtime.Ensemble.OutputCombiners
         protected void GetNaNOutput(ref VBuffer<Single> dst, int len)
         {
             Contracts.Assert(len >= 0);
-            var values = dst.Values;
-            if (Utils.Size(values) < len)
-                values = new Single[len];
+            var editor = VBufferEditor.Create(ref dst, len);
             for (int i = 0; i < len; i++)
-                values[i] = Single.NaN;
-            dst = new VBuffer<Single>(len, values, dst.Indices);
+                editor.Values[i] = Single.NaN;
+            dst = editor.Commit();
         }
     }
 }

@@ -6,10 +6,11 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using Microsoft.ML.Runtime;
 
-namespace Microsoft.ML.Runtime.RunTests
+namespace Microsoft.ML.RunTests
 {
-    using ResultProcessor = Microsoft.ML.Runtime.Internal.Internallearn.ResultProcessor.ResultProcessor;
+    using ResultProcessor = ResultProcessor.ResultProcessor;
 
     /// <summary>
     /// This is a base test class designed to support running trainings and related
@@ -90,7 +91,7 @@ namespace Microsoft.ML.Runtime.RunTests
         /// <summary>
         /// Run the predictor with given args and check if it adds up
         /// </summary>
-        protected void Run(RunContext ctx, decimal precision = Tolerance)
+        protected void Run(RunContext ctx, int digitsOfPrecision = DigitsOfPrecision, NumberParseOption parseOption = NumberParseOption.Default)
         {
             Contracts.Assert(IsActive);
             List<string> args = new List<string>();
@@ -158,13 +159,13 @@ namespace Microsoft.ML.Runtime.RunTests
             {
                 // Not capturing into a specific log.
                 Log("*** Start raw predictor output");
-                res = MainForTest(Env, LogWriter, string.Join(" ", ctx.Command, runcmd), ctx.BaselineProgress);
+                res = MainForTest(_env, LogWriter, string.Join(" ", ctx.Command, runcmd), ctx.BaselineProgress);
                 Log("*** End raw predictor output, return={0}", res);
                 return;
             }
             var consOutPath = ctx.StdoutPath();
-            TestCore(ctx, ctx.Command.ToString(), runcmd);
-            bool matched = consOutPath.CheckEqualityNormalized(precision);
+            TestCore(ctx, ctx.Command.ToString(), runcmd, digitsOfPrecision: digitsOfPrecision, parseOption: parseOption);
+            bool matched = consOutPath.CheckEqualityNormalized(digitsOfPrecision, parseOption: parseOption);
 
             if (modelPath != null && (ctx.Summary || ctx.SaveAsIni))
             {
@@ -189,8 +190,8 @@ namespace Microsoft.ML.Runtime.RunTests
                     Log("  Saving ini file: {0}", str);
                 }
 
-                MainForTest(Env, LogWriter, str);
-                files.ForEach(file => CheckEqualityNormalized(dir, file, precision: precision));
+                MainForTest(_env, LogWriter, str);
+                files.ForEach(file => CheckEqualityNormalized(dir, file, digitsOfPrecision: digitsOfPrecision, parseOption: parseOption));
             }
 
             if (ctx.Command == Cmd.Train || ctx.Command == Cmd.Test || ctx.ExpectedToFail)
@@ -208,12 +209,12 @@ namespace Microsoft.ML.Runtime.RunTests
 
                 // Run result processor on the console output.
                 RunResultProcessorTest(new string[] { consOutPath.Path }, rpOutPath, rpArgs);
-                CheckEqualityNormalized(dir, rpName);
+                CheckEqualityNormalized(dir, rpName, digitsOfPrecision:digitsOfPrecision, parseOption: parseOption);
             }
 
             // Check the prediction output against its baseline.
             Contracts.Assert(predOutPath != null);
-            predOutPath.CheckEquality();
+            predOutPath.CheckEquality(digitsOfPrecision: digitsOfPrecision, parseOption: parseOption);
 
             if (ctx.Command == Cmd.TrainTest)
             {
@@ -233,6 +234,7 @@ namespace Microsoft.ML.Runtime.RunTests
                 removeArgs.Add("xf=");
                 removeArgs.Add("cache-");
                 removeArgs.Add("sf=");
+                removeArgs.Add("loader=");
 
                 for (int i = 0; i < args.Count; ++i)
                 {
@@ -255,7 +257,7 @@ namespace Microsoft.ML.Runtime.RunTests
                 // Redirect output to the individual log and run the test.
                 var ctx2 = ctx.TestCtx();
                 OutputPath consOutPath2 = ctx2.StdoutPath();
-                TestCore(ctx2, "Test", runcmd);
+                TestCore(ctx2, "Test", runcmd, digitsOfPrecision, parseOption);
 
                 if (CheckTestOutputMatchesTrainTest(consOutPath.Path, consOutPath2.Path, 1))
                     File.Delete(consOutPath2.Path);
@@ -337,13 +339,14 @@ namespace Microsoft.ML.Runtime.RunTests
         /// </summary>
         protected void RunAllTests(
             IList<PredictorAndArgs> predictors, IList<TestDataset> datasets,
-            string[] extraSettings = null, string extraTag = "", bool summary = false)
+            string[] extraSettings = null, string extraTag = "", bool summary = false,
+            int digitsOfPrecision = DigitsOfPrecision, NumberParseOption parseOption = NumberParseOption.Default)
         {
             Contracts.Assert(IsActive);
             foreach (TestDataset dataset in datasets)
             {
                 foreach (PredictorAndArgs predictor in predictors)
-                    RunOneAllTests(predictor, dataset, extraSettings, extraTag, summary);
+                    RunOneAllTests(predictor, dataset, extraSettings, extraTag, summary, digitsOfPrecision, parseOption);
             }
         }
 
@@ -351,11 +354,12 @@ namespace Microsoft.ML.Runtime.RunTests
         /// Run TrainTest, CV, and TrainSaveTest for a single predictor on a single dataset.
         /// </summary>
         protected void RunOneAllTests(PredictorAndArgs predictor, TestDataset dataset,
-            string[] extraSettings = null, string extraTag = "", bool summary = false, decimal precision = Tolerance)
+            string[] extraSettings = null, string extraTag = "", bool summary = false,
+            int digitsOfPrecision = DigitsOfPrecision, NumberParseOption parseOption = NumberParseOption.Default)
         {
             Contracts.Assert(IsActive);
-            Run_TrainTest(predictor, dataset, extraSettings, extraTag, summary: summary, precision: precision);
-            Run_CV(predictor, dataset, extraSettings, extraTag, useTest: true, precision: precision);
+            Run_TrainTest(predictor, dataset, extraSettings, extraTag, summary: summary, digitsOfPrecision: digitsOfPrecision, parseOption: parseOption);
+            Run_CV(predictor, dataset, extraSettings, extraTag, useTest: true, digitsOfPrecision: digitsOfPrecision, parseOption: parseOption);
         }
 
         /// <summary>
@@ -383,10 +387,12 @@ namespace Microsoft.ML.Runtime.RunTests
         /// Run a train-test unit test
         /// </summary>
         protected void Run_TrainTest(PredictorAndArgs predictor, TestDataset dataset,
-            string[] extraSettings = null, string extraTag = "", bool expectFailure = false, bool summary = false, bool saveAsIni = false, decimal precision = Tolerance)
+            string[] extraSettings = null, string extraTag = "", bool expectFailure = false, bool summary = false,
+            bool saveAsIni = false, int digitsOfPrecision = DigitsOfPrecision,
+             NumberParseOption parseOption = NumberParseOption.Default)
         {
             RunContext ctx = new RunContext(this, Cmd.TrainTest, predictor, dataset, extraSettings, extraTag, expectFailure: expectFailure, summary: summary, saveAsIni: saveAsIni);
-            Run(ctx, precision);
+            Run(ctx, digitsOfPrecision, parseOption);
         }
 
         // REVIEW: Remove TrainSaveTest and supporting code.
@@ -421,7 +427,8 @@ namespace Microsoft.ML.Runtime.RunTests
         /// <paramref name="useTest"/> is set.
         /// </summary>
         protected void Run_CV(PredictorAndArgs predictor, TestDataset dataset,
-            string[] extraSettings = null, string extraTag = "", bool useTest = false, decimal precision = Tolerance)
+            string[] extraSettings = null, string extraTag = "", bool useTest = false,
+            int digitsOfPrecision = DigitsOfPrecision, NumberParseOption parseOption = NumberParseOption.Default)
         {
             if (useTest)
             {
@@ -431,7 +438,7 @@ namespace Microsoft.ML.Runtime.RunTests
                 dataset.trainFilename = dataset.testFilename;
             }
             RunContext cvCtx = new RunContext(this, Cmd.CV, predictor, dataset, extraSettings, extraTag);
-            Run(cvCtx, precision);
+            Run(cvCtx, digitsOfPrecision, parseOption);
         }
 
         /// <summary>

@@ -4,8 +4,9 @@
 
 using System;
 using System.Collections.Generic;
+using Microsoft.ML.Runtime;
 
-namespace Microsoft.ML.Runtime.Data
+namespace Microsoft.ML.Data
 {
     /// <summary>
     /// A mapper that can be bound to a <see cref="RoleMappedSchema"/> (which is an ISchema, with mappings from column kinds
@@ -20,7 +21,8 @@ namespace Microsoft.ML.Runtime.Data
     /// for the output schema of the <see cref="ISchemaBoundMapper"/>. In case the <see cref="ISchemaBoundRowMapper"/> interface is implemented,
     /// the SimpleRow class can be used in the <see cref="IRowToRowMapper.GetRow"/> method.
     /// </summary>
-    public interface ISchemaBindableMapper
+    [BestFriend]
+    internal interface ISchemaBindableMapper
     {
         ISchemaBoundMapper Bind(IHostEnvironment env, RoleMappedSchema schema);
     }
@@ -29,12 +31,18 @@ namespace Microsoft.ML.Runtime.Data
     /// This interface is used to map a schema from input columns to output columns. The <see cref="ISchemaBoundMapper"/> should keep track
     /// of the input columns that are needed for the mapping.
     /// </summary>
-    public interface ISchemaBoundMapper : ISchematized
+    [BestFriend]
+    internal interface ISchemaBoundMapper
     {
         /// <summary>
         /// The <see cref="RoleMappedSchema"/> that was passed to the <see cref="ISchemaBoundMapper"/> in the binding process.
         /// </summary>
         RoleMappedSchema InputRoleMappedSchema { get; }
+
+        /// <summary>
+        /// Gets schema of this mapper's output.
+        /// </summary>
+        DataViewSchema OutputSchema { get; }
 
         /// <summary>
         /// A property to get back the <see cref="ISchemaBindableMapper"/> that produced this <see cref="ISchemaBoundMapper"/>.
@@ -48,55 +56,35 @@ namespace Microsoft.ML.Runtime.Data
     }
 
     /// <summary>
-    /// This interface combines <see cref="ISchemaBoundMapper"/> with <see cref="IRowToRowMapper"/>.
+    /// This interface extends <see cref="ISchemaBoundMapper"/>.
     /// </summary>
-    public interface ISchemaBoundRowMapper : ISchemaBoundMapper, IRowToRowMapper
-    {
-    }
-
-    /// <summary>
-    /// This interface maps an input <see cref="IRow"/> to an output <see cref="IRow"/>. Typically, the output contains
-    /// both the input columns and new columns added by the implementing class, although some implementations may
-    /// return a subset of the input columns.
-    /// This interface is similar to <see cref="ISchemaBoundRowMapper"/>, except it does not have any input role mappings,
-    /// so to rebind, the same input column names must be used.
-    /// Implementing of this object are typically created using a definie input <see cref="ISchema"/>.
-    /// </summary>
-    public interface IRowToRowMapper : ISchematized
+    [BestFriend]
+    internal interface ISchemaBoundRowMapper : ISchemaBoundMapper
     {
         /// <summary>
-        /// Mappers are defined as accepting inputs with this very specific schema.
+        /// Input schema accepted.
         /// </summary>
-        ISchema InputSchema { get; }
+        DataViewSchema InputSchema { get; }
 
         /// <summary>
-        /// Given a predicate specifying which columns are needed, return a predicate indicating which input columns are
-        /// needed. The domain of the function is defined over the indices of the columns of <see cref="ISchema.ColumnCount"/>
-        /// for <see cref="InputSchema"/>.
+        /// Given a set of columns, from the newly generated ones, return the input columns that are needed to generate those output columns.
         /// </summary>
-        Func<int, bool> GetDependencies(Func<int, bool> predicate);
+        IEnumerable<DataViewSchema.Column> GetDependenciesForNewColumns(IEnumerable<DataViewSchema.Column> dependingColumns);
 
         /// <summary>
-        /// Get an <see cref="IRow"/> with the indicated active columns, based on the input <paramref name="input"/>.
-        /// The active columns are those for which <paramref name="active"/> returns true. Getting values on inactive
-        /// columns of the returned row will throw. Null predicates are disallowed.
+        /// Get an <see cref="DataViewRow"/> with the indicated active columns, based on the input <paramref name="input"/>.
+        /// Getting values on inactive columns of the returned row will throw.
         ///
-        /// The <see cref="ISchematized.Schema"/> of <paramref name="input"/> should be the same object as
+        /// The <see cref="DataViewRow.Schema"/> of <paramref name="input"/> should be the same object as
         /// <see cref="InputSchema"/>. Implementors of this method should throw if that is not the case. Conversely,
-        /// the returned value must have the same schema as <see cref="ISchematized.Schema"/>.
+        /// the returned value must have the same schema as <see cref="ISchemaBoundMapper.OutputSchema"/>.
         ///
-        /// This method creates a live connection between the input <see cref="IRow"/> and the output <see
-        /// cref="IRow"/>. In particular, when the getters of the output <see cref="IRow"/> are invoked, they invoke the
-        /// getters of the input row and base the output values on the current values of the input <see cref="IRow"/>.
-        /// The output <see cref="IRow"/> values are re-computed when requested through the getters.
-        ///
-        /// The optional <paramref name="disposer"/> should be invoked by any user of this row mapping, once it no
-        /// longer needs the <see cref="IRow"/>. If no action is needed when the cursor is Disposed, the implementation
-        /// should set <paramref name="disposer"/> to <c>null</c>, otherwise it should be set to a delegate to be
-        /// invoked by the code calling this object. (E.g., a wrapping cursor's <see cref="IDisposable.Dispose"/>
-        /// method. It's best for this action to be idempotent - calling it multiple times should be equivalent to
-        /// calling it once.
+        /// This method creates a live connection between the input <see cref="DataViewRow"/> and the output <see
+        /// cref="DataViewRow"/>. In particular, when the getters of the output <see cref="DataViewRow"/> are invoked, they invoke the
+        /// getters of the input row and base the output values on the current values of the input <see cref="DataViewRow"/>.
+        /// The output <see cref="DataViewRow"/> values are re-computed when requested through the getters. Also, the returned
+        /// <see cref="DataViewRow"/> will dispose <paramref name="input"/> when it is disposed.
         /// </summary>
-        IRow GetRow(IRow input, Func<int, bool> active, out Action disposer);
+        DataViewRow GetRow(DataViewRow input, IEnumerable<DataViewSchema.Column> activeColumns);
     }
 }

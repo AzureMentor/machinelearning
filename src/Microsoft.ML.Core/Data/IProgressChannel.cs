@@ -3,6 +3,7 @@
 // See the LICENSE file in the project root for more information.
 
 using System;
+using System.Collections.Generic;
 
 namespace Microsoft.ML.Runtime
 {
@@ -77,13 +78,13 @@ namespace Microsoft.ML.Runtime
         /// For example, neural network might have {'epoch', 'example'} and FastTree might have {'tree', 'split', 'feature'}.
         /// Will never be null, but can be empty.
         /// </summary>
-        public readonly string[] UnitNames;
+        public readonly IReadOnlyList<string> UnitNames;
 
         /// <summary>
         /// These are the names of the reported metrics. For example, this could be the 'loss', 'weight updates/sec' etc.
         /// Will never be null, but can be empty.
         /// </summary>
-        public readonly string[] MetricNames;
+        public readonly IReadOnlyList<string> MetricNames;
 
         /// <summary>
         /// Initialize the header. This will take ownership of the arrays.
@@ -97,7 +98,7 @@ namespace Microsoft.ML.Runtime
         /// <param name="unitNames">The names of the progress units, listed from least granular to most granular.
         /// The idea is that the progress should be lexicographically increasing (like [0,0], [0,10], [1,0], [1,15], [2,5] etc.).
         /// As naming convention, <paramref name="unitNames"/> should be lower-cased and typically plural
-        /// (e.g. iterations, clusters, examples). </param>
+        /// (for example, iterations, clusters, examples). </param>
         public ProgressHeader(string[] metricNames, string[] unitNames)
         {
             Contracts.CheckValueOrNull(unitNames);
@@ -109,7 +110,7 @@ namespace Microsoft.ML.Runtime
 
         /// <summary>
         /// A constructor for no metrics, just progress units. As naming convention, <paramref name="unitNames"/> should be lower-cased
-        /// and typically plural (e.g. iterations, clusters, examples).
+        /// and typically plural (for example, iterations, clusters, examples).
         /// </summary>
         public ProgressHeader(params string[] unitNames)
             : this(null, unitNames)

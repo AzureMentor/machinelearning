@@ -3,21 +3,24 @@
 // See the LICENSE file in the project root for more information.
 
 using System;
-using Microsoft.ML.Runtime.Internal.Utilities;
+using System.Collections.Generic;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Runtime;
 
-namespace Microsoft.ML.Runtime.Data
+namespace Microsoft.ML.Data
 {
     /// <summary>
     /// This implements a data view that has a schema, but no rows.
     /// </summary>
-    public sealed class EmptyDataView : IDataView
+    [BestFriend]
+    internal sealed class EmptyDataView : IDataView
     {
         private readonly IHost _host;
 
         public bool CanShuffle => true;
-        public ISchema Schema { get; }
+        public DataViewSchema Schema { get; }
 
-        public EmptyDataView(IHostEnvironment env, ISchema schema)
+        public EmptyDataView(IHostEnvironment env, DataViewSchema schema)
         {
             Contracts.CheckValue(env, nameof(env));
             _host = env.Register(nameof(EmptyDataView));
@@ -25,62 +28,58 @@ namespace Microsoft.ML.Runtime.Data
             Schema = schema;
         }
 
-        public long? GetRowCount(bool lazy = true) => 0;
+        public long? GetRowCount() => 0;
 
-        public IRowCursor GetRowCursor(Func<int, bool> needCol, IRandom rand = null)
+        public DataViewRowCursor GetRowCursor(IEnumerable<DataViewSchema.Column> columnsNeeded, Random rand = null)
         {
-            _host.CheckValue(needCol, nameof(needCol));
             _host.CheckValueOrNull(rand);
-            return new Cursor(_host, Schema, needCol);
+            return new Cursor(_host, Schema, columnsNeeded);
         }
 
-        public IRowCursor[] GetRowCursorSet(out IRowCursorConsolidator consolidator, Func<int, bool> needCol, int n, IRandom rand = null)
+        public DataViewRowCursor[] GetRowCursorSet(IEnumerable<DataViewSchema.Column> columnsNeeded, int n, Random rand = null)
         {
-            _host.CheckValue(needCol, nameof(needCol));
             _host.CheckValueOrNull(rand);
-            consolidator = null;
-            return new[] { new Cursor(_host, Schema, needCol) };
+            return new[] { new Cursor(_host, Schema, columnsNeeded) };
         }
 
-        private sealed class Cursor : RootCursorBase, IRowCursor
+        private sealed class Cursor : RootCursorBase
         {
             private readonly bool[] _active;
 
-            public ISchema Schema { get; }
+            public override DataViewSchema Schema { get; }
             public override long Batch => 0;
 
-            public Cursor(IChannelProvider provider, ISchema schema, Func<int, bool> needCol)
+            public Cursor(IChannelProvider provider, DataViewSchema schema, IEnumerable<DataViewSchema.Column> columnsNeeded)
                 : base(provider)
             {
                 Ch.AssertValue(schema);
-                Ch.AssertValue(needCol);
                 Schema = schema;
-                _active = Utils.BuildArray(Schema.ColumnCount, needCol);
+                _active = Utils.BuildArray(Schema.Count, columnsNeeded);
             }
 
-            public override ValueGetter<UInt128> GetIdGetter()
+            public override ValueGetter<DataViewRowId> GetIdGetter()
             {
-                return
-                    (ref UInt128 val) =>
-                    {
-                        Ch.Assert(!IsGood);
-                        throw Ch.Except("Cannot call ID getter in current state");
-                    };
+                return (ref DataViewRowId val) => throw Ch.Except(RowCursorUtils.FetchValueStateError);
             }
 
             protected override bool MoveNextCore() => false;
 
-            public bool IsColumnActive(int col) => 0 <= col && col < _active.Length && _active[col];
+            /// <summary>
+            /// Returns whether the given column is active in this row.
+            /// </summary>
+            public override bool IsColumnActive(DataViewSchema.Column column) => column.Index < _active.Length && _active[column.Index];
 
-            public ValueGetter<TValue> GetGetter<TValue>(int col)
+            /// <summary>
+            /// Returns a value getter delegate to fetch the value of column with the given columnIndex, from the row.
+            /// This throws if the column is not active in this row, or if the type
+            /// <typeparamref name="TValue"/> differs from this column's type.
+            /// </summary>
+            /// <typeparam name="TValue"> is the column's content type.</typeparam>
+            /// <param name="column"> is the output column whose getter should be returned.</param>
+            public override ValueGetter<TValue> GetGetter<TValue>(DataViewSchema.Column column)
             {
-                Ch.Check(IsColumnActive(col), "Can't get getter for inactive column");
-                return
-                    (ref TValue value) =>
-                    {
-                        Ch.Assert(State != CursorState.Good);
-                        throw Ch.Except("Cannot use getter with cursor in this state");
-                    };
+                Ch.CheckParam(IsColumnActive(column), nameof(column), "requested column not active");
+                return (ref TValue value) => throw Ch.Except(RowCursorUtils.FetchValueStateError);
             }
         }
     }

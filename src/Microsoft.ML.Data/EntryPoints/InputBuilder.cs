@@ -6,21 +6,22 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Internal.Utilities;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Data;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Runtime;
 using Newtonsoft.Json.Linq;
 
-namespace Microsoft.ML.Runtime.EntryPoints.JsonUtils
+namespace Microsoft.ML.EntryPoints
 {
     /// <summary>
     /// The class that creates and wraps around an instance of an input object and gradually populates all fields, keeping track of missing
     /// required values. The values can be set from their JSON representation (during the graph parsing stage), as well as directly
     /// (in the process of graph execution).
     /// </summary>
-    public sealed class InputBuilder
+    internal sealed class InputBuilder
     {
-        private struct Attributes
+        private readonly struct Attributes
         {
             public readonly ArgumentAttribute Input;
             public readonly TlcModule.RangeAttribute Range;
@@ -58,7 +59,7 @@ namespace Microsoft.ML.Runtime.EntryPoints.JsonUtils
             var fields = new List<FieldInfo>();
             var attrs = new List<Attributes>();
 
-            foreach (var fieldInfo in _type.GetFields())
+            foreach (var fieldInfo in _type.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
             {
                 var attr = (ArgumentAttribute)fieldInfo.GetCustomAttributes(typeof(ArgumentAttribute), false).FirstOrDefault();
                 if (attr == null || attr.Visibility == ArgumentAttribute.VisibilityType.CmdLineOnly)
@@ -234,7 +235,7 @@ namespace Microsoft.ML.Runtime.EntryPoints.JsonUtils
                         Contracts.Assert(success);
                         Contracts.AssertValue(varBinding);
 
-                        result.Add(field.Name, new JValue(varBinding.ToJson()));
+                        result.Add(attr.Input.Name ?? field.Name, new JValue(varBinding.ToJson()));
                     }
                     else if (paramBinding is ArrayIndexParameterBinding)
                     {
@@ -249,7 +250,7 @@ namespace Microsoft.ML.Runtime.EntryPoints.JsonUtils
                             array.Add(new JValue(varBinding.ToJson()));
                         }
 
-                        result.Add(field.Name, array);
+                        result.Add(attr.Input.Name ?? field.Name, array);
                     }
                     else
                     {
@@ -261,7 +262,7 @@ namespace Microsoft.ML.Runtime.EntryPoints.JsonUtils
                 else if (instanceVal == null && defaultsVal != null)
                 {
                     // Handle null values.
-                    result.Add(field.Name, new JValue(instanceVal));
+                    result.Add(attr.Input.Name ?? field.Name, new JValue(instanceVal));
                 }
                 else if (instanceVal != null && (attr.Input.IsRequired || !instanceVal.Equals(defaultsVal)))
                 {
@@ -275,13 +276,13 @@ namespace Microsoft.ML.Runtime.EntryPoints.JsonUtils
                     }
 
                     if (type == typeof(JArray))
-                        result.Add(field.Name, (JArray)instanceVal);
+                        result.Add(attr.Input.Name ?? field.Name, (JArray)instanceVal);
                     else if (type.IsGenericType &&
                         ((type.GetGenericTypeDefinition() == typeof(Var<>)) ||
                         type.GetGenericTypeDefinition() == typeof(ArrayVar<>) ||
                         type.GetGenericTypeDefinition() == typeof(DictionaryVar<>)))
                     {
-                        result.Add(field.Name, new JValue($"${((IVarSerializationHelper)instanceVal).VarName}"));
+                        result.Add(attr.Input.Name ?? field.Name, new JValue($"${((IVarSerializationHelper)instanceVal).VarName}"));
                     }
                     else if (type == typeof(bool) ||
                         type == typeof(string) ||
@@ -294,12 +295,12 @@ namespace Microsoft.ML.Runtime.EntryPoints.JsonUtils
                         type == typeof(ulong))
                     {
                         // Handle simple types.
-                        result.Add(field.Name, new JValue(instanceVal));
+                        result.Add(attr.Input.Name ?? field.Name, new JValue(instanceVal));
                     }
                     else if (type.IsEnum)
                     {
                         // Handle enums.
-                        result.Add(field.Name, new JValue(instanceVal.ToString()));
+                        result.Add(attr.Input.Name ?? field.Name, new JValue(instanceVal.ToString()));
                     }
                     else if (type.IsArray)
                     {
@@ -326,7 +327,7 @@ namespace Microsoft.ML.Runtime.EntryPoints.JsonUtils
                             foreach (object item in array)
                                 jarray.Add(builder.GetJsonObject(item, inputBindingMap, inputMap));
                         }
-                        result.Add(field.Name, jarray);
+                        result.Add(attr.Input.Name ?? field.Name, jarray);
                     }
                     else if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(Dictionary<,>) &&
                              type.GetGenericArguments()[0] == typeof(string))
@@ -363,7 +364,7 @@ namespace Microsoft.ML.Runtime.EntryPoints.JsonUtils
                             };
                             if (instSettings.ToString() != defSettings.ToString())
                                 jcomponent.Add(FieldNames.Settings, instSettings);
-                            result.Add(field.Name, jcomponent);
+                            result.Add(attr.Input.Name ?? field.Name, jcomponent);
                         }
                     }
                     else
@@ -372,7 +373,7 @@ namespace Microsoft.ML.Runtime.EntryPoints.JsonUtils
 
                         // Handle structs.
                         var builder = new InputBuilder(_ectx, type, _catalog);
-                        result.Add(field.Name, builder.GetJsonObject(instanceVal, new Dictionary<string, List<ParameterBinding>>(),
+                        result.Add(attr.Input.Name ?? field.Name, builder.GetJsonObject(instanceVal, new Dictionary<string, List<ParameterBinding>>(),
                             new Dictionary<ParameterBinding, VariableBinding>()));
                     }
                 }
@@ -646,7 +647,7 @@ namespace Microsoft.ML.Runtime.EntryPoints.JsonUtils
     /// This class wraps around the output object type, does not create an instance, and provides utility methods for field type checking
     /// and extracting values.
     /// </summary>
-    public sealed class OutputHelper
+    internal sealed class OutputHelper
     {
         private readonly IExceptionContext _ectx;
         private readonly Type _type;
@@ -736,7 +737,8 @@ namespace Microsoft.ML.Runtime.EntryPoints.JsonUtils
     /// <summary>
     /// These are the common field names used in the JSON objects for defining the manifest.
     /// </summary>
-    public static class FieldNames
+    [BestFriend]
+    internal static class FieldNames
     {
         public const string Nodes = "Nodes";
         public const string Kind = "Kind";
@@ -837,11 +839,11 @@ namespace Microsoft.ML.Runtime.EntryPoints.JsonUtils
         {
             public static new string ToString() => "SupportedMetric";
             public const string Auc = BinaryClassifierEvaluator.Auc;
-            public const string AccuracyMicro = Data.MultiClassClassifierEvaluator.AccuracyMicro;
-            public const string AccuracyMacro = MultiClassClassifierEvaluator.AccuracyMacro;
+            public const string AccuracyMicro = Data.MulticlassClassificationEvaluator.AccuracyMicro;
+            public const string AccuracyMacro = MulticlassClassificationEvaluator.AccuracyMacro;
             public const string F1 = BinaryClassifierEvaluator.F1;
             public const string AuPrc = BinaryClassifierEvaluator.AuPrc;
-            public const string TopKAccuracy = MultiClassClassifierEvaluator.TopKAccuracy;
+            public const string TopKAccuracy = MulticlassClassificationEvaluator.TopKAccuracy;
             public const string L1 = RegressionLossEvaluatorBase<MultiOutputRegressionEvaluator.Aggregator>.L1;
             public const string L2 = RegressionLossEvaluatorBase<MultiOutputRegressionEvaluator.Aggregator>.L2;
             public const string Rms = RegressionLossEvaluatorBase<MultiOutputRegressionEvaluator.Aggregator>.Rms;
@@ -849,8 +851,8 @@ namespace Microsoft.ML.Runtime.EntryPoints.JsonUtils
             public const string RSquared = RegressionLossEvaluatorBase<MultiOutputRegressionEvaluator.Aggregator>.RSquared;
             public const string LogLoss = BinaryClassifierEvaluator.LogLoss;
             public const string LogLossReduction = BinaryClassifierEvaluator.LogLossReduction;
-            public const string Ndcg = RankerEvaluator.Ndcg;
-            public const string Dcg = RankerEvaluator.Dcg;
+            public const string Ndcg = RankingEvaluator.Ndcg;
+            public const string Dcg = RankingEvaluator.Dcg;
             public const string PositivePrecision = BinaryClassifierEvaluator.PosPrecName;
             public const string PositiveRecall = BinaryClassifierEvaluator.PosRecallName;
             public const string NegativePrecision = BinaryClassifierEvaluator.NegPrecName;

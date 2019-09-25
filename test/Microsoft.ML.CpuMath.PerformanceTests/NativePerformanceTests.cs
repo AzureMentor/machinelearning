@@ -1,63 +1,73 @@
 ﻿// Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
-
 using System;
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Running;
-using Microsoft.ML.Runtime.Internal.CpuMath;
+using Microsoft.ML.Internal.CpuMath;
+using Microsoft.ML.Internal.CpuMath.Core;
 
 namespace Microsoft.ML.CpuMath.PerformanceTests
 {
     public class NativePerformanceTests : PerformanceTests
     {
+        private const int CbAlign = 16;
+
+        private static unsafe float* Ptr(AlignedArray a, float* p)
+        {
+            Contracts.AssertValue(a);
+            float* q = p + a.GetBase((long)p);
+            Contracts.Assert(((long)q & (CbAlign - 1)) == 0);
+            return q;
+        }
+
         [Benchmark]
         public unsafe void AddScalarU()
         {
             fixed (float* pdst = dst)
             {
-                CpuMathNativeUtils.AddScalarU(DefaultScale, pdst, Length);
+                Thunk.AddScalarU(DefaultScale, pdst, Length);
             }
         }
-        
+
         [Benchmark]
-        public unsafe void ScaleU()
+        public unsafe void Scale()
         {
             fixed (float* pdst = dst)
             {
-                CpuMathNativeUtils.ScaleU(DefaultScale, pdst, Length);
+                Thunk.Scale(DefaultScale, pdst, Length);
             }
         }
-        
+
         [Benchmark]
         public unsafe void ScaleSrcU()
         {
             fixed (float* psrc = src)
             fixed (float* pdst = dst)
             {
-                CpuMathNativeUtils.ScaleSrcU(DefaultScale, psrc, pdst, Length);
+                Thunk.ScaleSrcU(DefaultScale, psrc, pdst, Length);
             }
         }
-        
+
         [Benchmark]
         public unsafe void ScaleAddU()
         {
             fixed (float* pdst = dst)
             {
-                CpuMathNativeUtils.ScaleAddU(DefaultScale, DefaultScale, pdst, Length);
+                Thunk.ScaleAddU(DefaultScale, DefaultScale, pdst, Length);
             }
         }
-        
+
         [Benchmark]
         public unsafe void AddScaleU()
         {
             fixed (float* psrc = src)
             fixed (float* pdst = dst)
             {
-                CpuMathNativeUtils.AddScaleU(DefaultScale, psrc, pdst, Length);
+                Thunk.AddScaleU(DefaultScale, psrc, pdst, Length);
             }
         }
-        
+
         [Benchmark]
         public unsafe void AddScaleSU()
         {
@@ -65,10 +75,10 @@ namespace Microsoft.ML.CpuMath.PerformanceTests
             fixed (float* pdst = dst)
             fixed (int* pidx = idx)
             {
-                CpuMathNativeUtils.AddScaleSU(DefaultScale, psrc, pidx, pdst, IndexLength);
+                Thunk.AddScaleSU(DefaultScale, psrc, pidx, pdst, IndexLength);
             }
         }
-        
+
         [Benchmark]
         public unsafe void AddScaleCopyU()
         {
@@ -76,20 +86,20 @@ namespace Microsoft.ML.CpuMath.PerformanceTests
             fixed (float* pdst = dst)
             fixed (float* pres = result)
             {
-                CpuMathNativeUtils.AddScaleCopyU(DefaultScale, psrc, pdst, pres, Length);
+                Thunk.AddScaleCopyU(DefaultScale, psrc, pdst, pres, Length);
             }
         }
-        
+
         [Benchmark]
         public unsafe void AddU()
         {
             fixed (float* psrc = src)
             fixed (float* pdst = dst)
             {
-                CpuMathNativeUtils.AddU(psrc, pdst, Length);
+                Thunk.AddU(psrc, pdst, Length);
             }
         }
-        
+
         [Benchmark]
         public unsafe void AddSU()
         {
@@ -97,10 +107,10 @@ namespace Microsoft.ML.CpuMath.PerformanceTests
             fixed (float* pdst = dst)
             fixed (int* pidx = idx)
             {
-                CpuMathNativeUtils.AddSU(psrc, pidx, pdst, IndexLength);
+                Thunk.AddSU(psrc, pidx, pdst, IndexLength);
             }
         }
-        
+
         [Benchmark]
         public unsafe void MulElementWiseU()
         {
@@ -108,83 +118,83 @@ namespace Microsoft.ML.CpuMath.PerformanceTests
             fixed (float* psrc2 = src2)
             fixed (float* pdst = dst)
             {
-                CpuMathNativeUtils.MulElementWiseU(psrc1, psrc2, pdst, Length);
+                Thunk.MulElementWiseU(psrc1, psrc2, pdst, Length);
             }
         }
-        
+
         [Benchmark]
-        public unsafe float SumU()
+        public unsafe float Sum()
         {
             fixed (float* psrc = src)
             {
-                return CpuMathNativeUtils.SumU(psrc, Length);
+                return Thunk.Sum(psrc, Length);
             }
         }
-        
+
         [Benchmark]
         public unsafe float SumSqU()
         {
             fixed (float* psrc = src)
             {
-                return CpuMathNativeUtils.SumSqU(psrc, Length);
+                return Thunk.SumSqU(psrc, Length);
             }
         }
-        
+
         [Benchmark]
         public unsafe float SumSqDiffU()
         {
             fixed (float* psrc = src)
             {
-                return CpuMathNativeUtils.SumSqDiffU(DefaultScale, psrc, Length);
+                return Thunk.SumSqDiffU(DefaultScale, psrc, Length);
             }
         }
-        
+
         [Benchmark]
         public unsafe float SumAbsU()
         {
             fixed (float* psrc = src)
             {
-                return CpuMathNativeUtils.SumAbsU(psrc, Length);
+                return Thunk.SumAbsU(psrc, Length);
             }
         }
-        
+
         [Benchmark]
         public unsafe float SumAbsDiffU()
         {
             fixed (float* psrc = src)
             {
-                return CpuMathNativeUtils.SumAbsDiffU(DefaultScale, psrc, Length);
+                return Thunk.SumAbsDiffU(DefaultScale, psrc, Length);
             }
         }
-        
+
         [Benchmark]
         public unsafe float MaxAbsU()
         {
             fixed (float* psrc = src)
             {
-                return CpuMathNativeUtils.MaxAbsU(psrc, Length);
+                return Thunk.MaxAbsU(psrc, Length);
             }
         }
-        
+
         [Benchmark]
         public unsafe float MaxAbsDiffU()
         {
             fixed (float* psrc = src)
             {
-                return CpuMathNativeUtils.MaxAbsDiffU(DefaultScale, psrc, Length);
+                return Thunk.MaxAbsDiffU(DefaultScale, psrc, Length);
             }
         }
-        
+
         [Benchmark]
         public unsafe float DotU()
         {
             fixed (float* psrc = src)
             fixed (float* pdst = dst)
             {
-                return CpuMathNativeUtils.DotU(psrc, pdst, Length);
+                return Thunk.DotU(psrc, pdst, Length);
             }
         }
-        
+
         [Benchmark]
         public unsafe float DotSU()
         {
@@ -192,7 +202,7 @@ namespace Microsoft.ML.CpuMath.PerformanceTests
             fixed (float* pdst = dst)
             fixed (int* pidx = idx)
             {
-                return CpuMathNativeUtils.DotSU(psrc, pdst, pidx, IndexLength);
+                return Thunk.DotSU(psrc, pdst, pidx, IndexLength);
             }
         }
 
@@ -202,7 +212,7 @@ namespace Microsoft.ML.CpuMath.PerformanceTests
             fixed (float* psrc = src)
             fixed (float* pdst = dst)
             {
-                return CpuMathNativeUtils.Dist2(psrc, pdst, Length);
+                return Thunk.Dist2(psrc, pdst, Length);
             }
         }
 
@@ -213,7 +223,7 @@ namespace Microsoft.ML.CpuMath.PerformanceTests
             fixed (float* pdst = dst)
             fixed (float* pres = result)
             {
-                CpuMathNativeUtils.SdcaL1UpdateU(DefaultScale, psrc, DefaultScale, pdst, pres, Length);
+                Thunk.SdcaL1UpdateU(DefaultScale, psrc, DefaultScale, pdst, pres, Length);
             }
         }
 
@@ -225,8 +235,36 @@ namespace Microsoft.ML.CpuMath.PerformanceTests
             fixed (float* pres = result)
             fixed (int* pidx = idx)
             {
-                CpuMathNativeUtils.SdcaL1UpdateSU(DefaultScale, psrc, pidx, DefaultScale, pdst, pres, IndexLength);
+                Thunk.SdcaL1UpdateSU(DefaultScale, psrc, pidx, DefaultScale, pdst, pres, IndexLength);
             }
+        }
+
+        [Benchmark]
+        public unsafe void MatMul()
+        {
+            fixed (float* pmat = &testMatrixAligned.Items[0])
+            fixed (float* psrc = &testSrcVectorAligned.Items[0])
+            fixed (float* pdst = &testDstVectorAligned.Items[0])
+                Thunk.MatMul(Ptr(testMatrixAligned, pmat), Ptr(testSrcVectorAligned, psrc), Ptr(testDstVectorAligned, pdst), matrixLength, testSrcVectorAligned.Size);
+        }
+
+        [Benchmark]
+        public unsafe void MatMulTran()
+        {
+            fixed (float* pmat = &testMatrixAligned.Items[0])
+            fixed (float* psrc = &testSrcVectorAligned.Items[0])
+            fixed (float* pdst = &testDstVectorAligned.Items[0])
+                Thunk.MatMulTran(Ptr(testMatrixAligned, pmat), Ptr(testSrcVectorAligned, psrc), Ptr(testDstVectorAligned, pdst), testDstVectorAligned.Size, matrixLength);
+        }
+
+        [Benchmark]
+        public unsafe void MatMulP()
+        {
+            fixed (float* pmat = &testMatrixAligned.Items[0])
+            fixed (float* psrc = &testSrcVectorAligned.Items[0])
+            fixed (float* pdst = &testDstVectorAligned.Items[0])
+            fixed (int* ppossrc = &matrixIdx[0])
+                Thunk.MatMulP(Ptr(testMatrixAligned, pmat), ppossrc, Ptr(testSrcVectorAligned, psrc), 0, 0, MatrixIndexLength, Ptr(testDstVectorAligned, pdst), matrixLength, testSrcVectorAligned.Size);
         }
     }
 }

@@ -5,9 +5,9 @@
 using System;
 using System.Linq;
 using System.Text;
-using Microsoft.ML.Runtime.Internal.Utilities;
+using Microsoft.ML.Internal.Utilities;
 
-namespace Microsoft.ML.Runtime.FastTree.Internal
+namespace Microsoft.ML.Trainers.FastTree
 {
     /// <summary>
     /// This class contains extension methods that support binary serialization of some base C# types
@@ -18,7 +18,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
     ///   the representation
     /// byte[].ToXXX(ref position) - converts the binary representation back into the original type
     /// </summary>
-    public static class ToByteArrayExtensions
+    internal static class ToByteArrayExtensions
     {
         // byte
 
@@ -191,18 +191,6 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
         {
             ulong a = BitConverter.ToUInt64(buffer, position);
             position += sizeof(ulong);
-            return a;
-        }
-
-        // UInt128
-
-        public static MD5Hash ToUInt128(this byte[] buffer, ref int position)
-        {
-            MD5Hash a = new MD5Hash
-            {
-                Prefix = buffer.ToULong(ref position),
-                Suffix = buffer.ToULong(ref position)
-            };
             return a;
         }
 
@@ -547,33 +535,6 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
             }
             position += length * sizeof(ulong);
 
-            return a;
-        }
-
-        // UInt128[]
-
-        public static int SizeInBytes(this MD5Hash[] array)
-        {
-            return sizeof(int) + Utils.Size(array) * MD5Hash.SizeInBytes();
-        }
-
-        public static void ToByteArray(this MD5Hash[] a, byte[] buffer, ref int position)
-        {
-            a.Length.ToByteArray(buffer, ref position);
-            for (int i = 0; i < a.Length; ++i)
-            {
-                a[i].ToByteArray(buffer, ref position);
-            }
-        }
-
-        public static unsafe MD5Hash[] ToUInt128Array(this byte[] buffer, ref int position)
-        {
-            int length = buffer.ToInt(ref position);
-            MD5Hash[] a = new MD5Hash[length];
-            for (int i = 0; i < length; ++i)
-            {
-                a[i] = buffer.ToUInt128(ref position);
-            }
             return a;
         }
 

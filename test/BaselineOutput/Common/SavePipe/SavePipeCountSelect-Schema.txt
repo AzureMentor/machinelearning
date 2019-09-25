@@ -1,0 +1,101 @@
+---- BoundLoader ----
+3 columns:
+  One: String
+  Num: Vector<Single, 8>
+  Key: Key<Byte, 0-10>
+---- RowToRowMapperTransform ----
+4 columns:
+  One: String
+  Num: Vector<Single, 8>
+  Key: Key<Byte, 0-10>
+  OneInd: Key<UInt32, 0-1023>
+---- RowToRowMapperTransform ----
+5 columns:
+  One: String
+  Num: Vector<Single, 8>
+  Key: Key<Byte, 0-10>
+  OneInd: Key<UInt32, 0-1023>
+  OneInd: Vector<Single, 1024>
+    Metadata 'IsNormalized': Boolean: '1'
+---- RowToRowMapperTransform ----
+7 columns:
+  One: String
+  One: String
+  Num: Vector<Single, 8>
+  Num: Vector<Single, 8>
+  Key: Key<Byte, 0-10>
+  OneInd: Key<UInt32, 0-1023>
+  OneInd: Vector<Single, 1024>
+    Metadata 'IsNormalized': Boolean: '1'
+---- RowToRowMapperTransform ----
+8 columns:
+  One: String
+  One: String
+  Num: Vector<Single, 8>
+  Num: Vector<Single, 8>
+  Key: Key<Byte, 0-10>
+  OneInd: Key<UInt32, 0-1023>
+  OneInd: Vector<Single, 1024>
+    Metadata 'IsNormalized': Boolean: '1'
+  OneInd: Vector<Single, 10>
+    Metadata 'IsNormalized': Boolean: '1'
+---- RowToRowMapperTransform ----
+11 columns:
+  One: String
+  One: String
+  One: String
+  Num: Vector<Single, 8>
+  Num: Vector<Single, 8>
+  Num: Vector<Single, 8>
+  Key: Key<Byte, 0-10>
+  OneInd: Key<UInt32, 0-1023>
+  OneInd: Vector<Single, 1024>
+    Metadata 'IsNormalized': Boolean: '1'
+  OneInd: Vector<Single, 10>
+    Metadata 'IsNormalized': Boolean: '1'
+  OneInd: Vector<Single, 10>
+    Metadata 'IsNormalized': Boolean: '1'
+---- RowToRowMapperTransform ----
+12 columns:
+  One: String
+  One: String
+  One: String
+  Num: Vector<Single, 8>
+  Num: Vector<Single, 8>
+  Num: Vector<Single, 8>
+  Key: Key<Byte, 0-10>
+  Key: Vector<Single, 11>
+    Metadata 'CategoricalSlotRanges': Vector<Int32, 1, 2>: Length=2, Count=2
+      [0] '0', [1] '10'
+    Metadata 'IsNormalized': Boolean: '1'
+  OneInd: Key<UInt32, 0-1023>
+  OneInd: Vector<Single, 1024>
+    Metadata 'IsNormalized': Boolean: '1'
+  OneInd: Vector<Single, 10>
+    Metadata 'IsNormalized': Boolean: '1'
+  OneInd: Vector<Single, 10>
+    Metadata 'IsNormalized': Boolean: '1'
+---- RowToRowMapperTransform ----
+13 columns:
+  One: String
+  One: String
+  One: String
+  Num: Vector<Single, 8>
+  Num: Vector<Single, 8>
+  Num: Vector<Single, 8>
+  Key: Key<Byte, 0-10>
+  Key: Vector<Single, 11>
+    Metadata 'CategoricalSlotRanges': Vector<Int32, 1, 2>: Length=2, Count=2
+      [0] '0', [1] '10'
+    Metadata 'IsNormalized': Boolean: '1'
+  Key: Vector<Single, 3>
+    Metadata 'CategoricalSlotRanges': Vector<Int32, 1, 2>: Length=2, Count=2
+      [0] '0', [1] '2'
+    Metadata 'IsNormalized': Boolean: '1'
+  OneInd: Key<UInt32, 0-1023>
+  OneInd: Vector<Single, 1024>
+    Metadata 'IsNormalized': Boolean: '1'
+  OneInd: Vector<Single, 10>
+    Metadata 'IsNormalized': Boolean: '1'
+  OneInd: Vector<Single, 10>
+    Metadata 'IsNormalized': Boolean: '1'

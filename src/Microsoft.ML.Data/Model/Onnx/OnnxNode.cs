@@ -4,9 +4,8 @@
 
 using System;
 using System.Collections.Generic;
-using Microsoft.ML.Runtime.Data;
 
-namespace Microsoft.ML.Runtime.Model.Onnx
+namespace Microsoft.ML.Model.OnnxConverter
 {
     /// <summary>
     /// An abstraction for an ONNX node as created by
@@ -14,7 +13,8 @@ namespace Microsoft.ML.Runtime.Model.Onnx
     /// That method creates a with inputs and outputs, but this object can modify the node further
     /// by adding attributes (in ONNX parlance, attributes are more or less constant parameterizations).
     /// </summary>
-    public abstract class OnnxNode
+    [BestFriend]
+    internal abstract class OnnxNode
     {
         public abstract void AddAttribute(string argName, double value);
         public abstract void AddAttribute(string argName, long value);
@@ -29,5 +29,6 @@ namespace Microsoft.ML.Runtime.Model.Onnx
         public abstract void AddAttribute(string argName, string[] value);
         public abstract void AddAttribute(string argName, IEnumerable<string> value);
         public abstract void AddAttribute(string argName, IEnumerable<bool> value);
+        public abstract void AddAttribute(string argName, Type t);
     }
 }

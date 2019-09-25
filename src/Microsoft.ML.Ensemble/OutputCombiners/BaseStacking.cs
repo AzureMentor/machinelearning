@@ -5,18 +5,15 @@
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.EntryPoints;
-using Microsoft.ML.Runtime.Internal.Internallearn;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Runtime.Model;
-using Microsoft.ML.Runtime.Training;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Data;
+using Microsoft.ML.Internal.Internallearn;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Runtime;
 
-namespace Microsoft.ML.Runtime.Ensemble.OutputCombiners
+namespace Microsoft.ML.Trainers.Ensemble
 {
-    using ColumnRole = RoleMappedSchema.ColumnRole;
-    public abstract class BaseStacking<TOutput> : IStackingTrainer<TOutput>
+    internal abstract class BaseStacking<TOutput> : IStackingTrainer<TOutput>, ICanSaveModel
     {
         public abstract class ArgumentsBase
         {
@@ -25,16 +22,16 @@ namespace Microsoft.ML.Runtime.Ensemble.OutputCombiners
             [TGUI(Label = "Validation Dataset Proportion")]
             public Single ValidationDatasetProportion = 0.3f;
 
-            internal abstract IComponentFactory<ITrainer<IPredictorProducing<TOutput>>> GetPredictorFactory();
+            internal abstract IComponentFactory<ITrainerEstimator<ISingleFeaturePredictionTransformer<IPredictorProducing<TOutput>>, IPredictorProducing<TOutput>>> GetPredictorFactory();
         }
 
-        protected readonly IComponentFactory<ITrainer<IPredictorProducing<TOutput>>> BasePredictorType;
-        protected readonly IHost Host;
-        protected IPredictorProducing<TOutput> Meta;
+        private protected readonly IComponentFactory<ITrainerEstimator<ISingleFeaturePredictionTransformer<IPredictorProducing<TOutput>>, IPredictorProducing<TOutput>>> BasePredictorType;
+        private protected readonly IHost Host;
+        private protected IPredictorProducing<TOutput> Meta;
 
         public Single ValidationDatasetProportion { get; }
 
-        internal BaseStacking(IHostEnvironment env, string name, ArgumentsBase args)
+        private protected BaseStacking(IHostEnvironment env, string name, ArgumentsBase args)
         {
             Contracts.AssertValue(env);
             env.AssertNonWhiteSpace(name);
@@ -49,7 +46,7 @@ namespace Microsoft.ML.Runtime.Ensemble.OutputCombiners
             Host.CheckValue(BasePredictorType, nameof(BasePredictorType));
         }
 
-        internal BaseStacking(IHostEnvironment env, string name, ModelLoadContext ctx)
+        private protected BaseStacking(IHostEnvironment env, string name, ModelLoadContext ctx)
         {
             Contracts.AssertValue(env);
             env.AssertNonWhiteSpace(name);
@@ -68,7 +65,7 @@ namespace Microsoft.ML.Runtime.Ensemble.OutputCombiners
             CheckMeta();
         }
 
-        public void Save(ModelSaveContext ctx)
+        void ICanSaveModel.Save(ModelSaveContext ctx)
         {
             Host.Check(Meta != null, "Can't save an untrained Stacking combiner");
             Host.CheckValue(ctx, nameof(ctx));
@@ -104,7 +101,7 @@ namespace Microsoft.ML.Runtime.Ensemble.OutputCombiners
                 (ref TOutput dst, TOutput[] src, Single[] weights) =>
                 {
                     FillFeatureBuffer(src, ref feat);
-                    map(ref feat, ref dst);
+                    map(in feat, ref dst);
                 };
             return res;
         }
@@ -117,13 +114,13 @@ namespace Microsoft.ML.Runtime.Ensemble.OutputCombiners
 
             var ivm = Meta as IValueMapper;
             Contracts.Check(ivm != null, "Stacking predictor doesn't implement the expected interface");
-            if (!ivm.InputType.IsVector || ivm.InputType.ItemType != NumberType.Float)
+            if (!(ivm.InputType is VectorDataViewType vectorType) || vectorType.ItemType != NumberDataViewType.Single)
                 throw Contracts.Except("Stacking predictor input type is unsupported: {0}", ivm.InputType);
             if (ivm.OutputType.RawType != typeof(TOutput))
                 throw Contracts.Except("Stacking predictor output type is unsupported: {0}", ivm.OutputType);
         }
 
-        public void Train(List<FeatureSubsetModel<IPredictorProducing<TOutput>>> models, RoleMappedData data, IHostEnvironment env)
+        public void Train(List<FeatureSubsetModel<TOutput>> models, RoleMappedData data, IHostEnvironment env)
         {
             Contracts.CheckValue(env, nameof(env));
             var host = env.Register(Stacking.LoadName);
@@ -143,56 +140,75 @@ namespace Microsoft.ML.Runtime.Ensemble.OutputCombiners
                     maps[i] = m.GetMapper<VBuffer<Single>, TOutput>();
                 }
 
-                // REVIEW: Should implement this better....
-                var labels = new Single[100];
-                var features = new VBuffer<Single>[100];
-                int count = 0;
-                // REVIEW: Should this include bad values or filter them?
-                using (var cursor = new FloatLabelCursor(data, CursOpt.AllFeatures | CursOpt.AllLabels))
-                {
-                    TOutput[] predictions = new TOutput[maps.Length];
-                    var vBuffers = new VBuffer<Single>[maps.Length];
-                    while (cursor.MoveNext())
-                    {
-                        Parallel.For(0, maps.Length, i =>
-                        {
-                            var model = models[i];
-                            if (model.SelectedFeatures != null)
-                            {
-                                EnsembleUtils.SelectFeatures(ref cursor.Features, model.SelectedFeatures, model.Cardinality, ref vBuffers[i]);
-                                maps[i](ref vBuffers[i], ref predictions[i]);
-                            }
-                            else
-                                maps[i](ref cursor.Features, ref predictions[i]);
-                        });
-
-                        Utils.EnsureSize(ref labels, count + 1);
-                        Utils.EnsureSize(ref features, count + 1);
-                        labels[count] = cursor.Label;
-                        FillFeatureBuffer(predictions, ref features[count]);
-                        count++;
-                    }
-                }
-
-                ch.Info("The number of instances used for stacking trainer is {0}", count);
-
-                var bldr = new ArrayDataViewBuilder(host);
-                Array.Resize(ref labels, count);
-                Array.Resize(ref features, count);
-                bldr.AddColumn(DefaultColumnNames.Label, NumberType.Float, labels);
-                bldr.AddColumn(DefaultColumnNames.Features, NumberType.Float, features);
-
-                var view = bldr.GetDataView();
-                var rmd = new RoleMappedData(view, DefaultColumnNames.Label, DefaultColumnNames.Features);
-
+                var view = CreateDataView(host, ch, data, maps, models);
                 var trainer = BasePredictorType.CreateComponent(host);
                 if (trainer.Info.NeedNormalization)
                     ch.Warning("The trainer specified for stacking wants normalization, but we do not currently allow this.");
-                Meta = trainer.Train(rmd);
+                Meta = trainer.Fit(view).Model;
                 CheckMeta();
-
-                ch.Done();
             }
+        }
+
+        private IDataView CreateDataView(IHostEnvironment env, IChannel ch, RoleMappedData data, ValueMapper<VBuffer<Single>,
+            TOutput>[] maps, List<FeatureSubsetModel<TOutput>> models)
+        {
+            switch (data.Schema.Label.Value.Type.GetRawKind())
+            {
+            case InternalDataKind.BL:
+                return CreateDataView<bool>(env, ch, data, maps, models, x => x > 0);
+            case InternalDataKind.R4:
+                return CreateDataView<float>(env, ch, data, maps, models, x => x);
+            case InternalDataKind.U4:
+                ch.Check(data.Schema.Label.Value.Type is KeyDataViewType);
+                return CreateDataView(env, ch, data, maps, models, x => float.IsNaN(x) ? 0 : (uint)(x + 1));
+            default:
+                throw ch.Except("Unsupported label type");
+            }
+        }
+
+        private IDataView CreateDataView<T>(IHostEnvironment env, IChannel ch, RoleMappedData data, ValueMapper<VBuffer<Single>, TOutput>[] maps,
+            List<FeatureSubsetModel<TOutput>> models, Func<float, T> labelConvert)
+        {
+            // REVIEW: Should implement this better....
+            var labels = new T[100];
+            var features = new VBuffer<Single>[100];
+            int count = 0;
+            // REVIEW: Should this include bad values or filter them?
+            using (var cursor = new FloatLabelCursor(data, CursOpt.AllFeatures | CursOpt.AllLabels))
+            {
+                TOutput[] predictions = new TOutput[maps.Length];
+                var vBuffers = new VBuffer<Single>[maps.Length];
+                while (cursor.MoveNext())
+                {
+                    Parallel.For(0, maps.Length, i =>
+                    {
+                        var model = models[i];
+                        if (model.SelectedFeatures != null)
+                        {
+                            EnsembleUtils.SelectFeatures(in cursor.Features, model.SelectedFeatures, model.Cardinality, ref vBuffers[i]);
+                            maps[i](in vBuffers[i], ref predictions[i]);
+                        }
+                        else
+                            maps[i](in cursor.Features, ref predictions[i]);
+                    });
+
+                    Utils.EnsureSize(ref labels, count + 1);
+                    Utils.EnsureSize(ref features, count + 1);
+                    labels[count] = labelConvert(cursor.Label);
+                    FillFeatureBuffer(predictions, ref features[count]);
+                    count++;
+                }
+            }
+
+            ch.Info("The number of instances used for stacking trainer is {0}", count);
+
+            var bldr = new ArrayDataViewBuilder(env);
+            Array.Resize(ref labels, count);
+            Array.Resize(ref features, count);
+            bldr.AddColumn(DefaultColumnNames.Label, data.Schema.Label.Value.Type as PrimitiveDataViewType, labels);
+            bldr.AddColumn(DefaultColumnNames.Features, NumberDataViewType.Single, features);
+
+            return bldr.GetDataView();
         }
     }
 }

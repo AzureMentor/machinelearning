@@ -2,10 +2,6 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-#pragma warning disable 420 // volatile with Interlocked.CompareExchange
-
-using Float = System.Single;
-
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -13,10 +9,11 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading;
-using Microsoft.ML.Runtime.Data.Conversion;
-using Microsoft.ML.Runtime.Internal.Utilities;
+using Microsoft.ML.Data.Conversion;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Runtime;
 
-namespace Microsoft.ML.Runtime.Data
+namespace Microsoft.ML.Data
 {
     using Conditional = System.Diagnostics.ConditionalAttribute;
 
@@ -32,9 +29,9 @@ namespace Microsoft.ML.Runtime.Data
             {
                 get
                 {
-                    if (_instance == null)
-                        Interlocked.CompareExchange(ref _instance, new ValueCreatorCache(), null);
-                    return _instance;
+                    return _instance ??
+                        Interlocked.CompareExchange(ref _instance, new ValueCreatorCache(), null) ??
+                        _instance;
                 }
             }
 
@@ -49,71 +46,71 @@ namespace Microsoft.ML.Runtime.Data
             private ValueCreatorCache()
             {
                 _conv = Conversions.Instance;
-                _methOne = new Func<PrimitiveType, Func<RowSet, ColumnPipe>>(GetCreatorOneCore<int>)
+                _methOne = new Func<PrimitiveDataViewType, Func<RowSet, ColumnPipe>>(GetCreatorOneCore<int>)
                     .GetMethodInfo().GetGenericMethodDefinition();
-                _methVec = new Func<PrimitiveType, Func<RowSet, ColumnPipe>>(GetCreatorVecCore<int>)
+                _methVec = new Func<PrimitiveDataViewType, Func<RowSet, ColumnPipe>>(GetCreatorVecCore<int>)
                     .GetMethodInfo().GetGenericMethodDefinition();
 
-                _creatorsOne = new Func<RowSet, ColumnPipe>[DataKindExtensions.KindCount];
-                _creatorsVec = new Func<RowSet, ColumnPipe>[DataKindExtensions.KindCount];
-                for (var kind = DataKindExtensions.KindMin; kind < DataKindExtensions.KindLim; kind++)
+                _creatorsOne = new Func<RowSet, ColumnPipe>[InternalDataKindExtensions.KindCount];
+                _creatorsVec = new Func<RowSet, ColumnPipe>[InternalDataKindExtensions.KindCount];
+                for (var kind = InternalDataKindExtensions.KindMin; kind < InternalDataKindExtensions.KindLim; kind++)
                 {
-                    var type = PrimitiveType.FromKind(kind);
+                    var type = ColumnTypeExtensions.PrimitiveTypeFromKind(kind);
                     _creatorsOne[kind.ToIndex()] = GetCreatorOneCore(type);
                     _creatorsVec[kind.ToIndex()] = GetCreatorVecCore(type);
                 }
             }
 
-            private Func<RowSet, ColumnPipe> GetCreatorOneCore(PrimitiveType type)
+            private Func<RowSet, ColumnPipe> GetCreatorOneCore(PrimitiveDataViewType type)
             {
                 MethodInfo meth = _methOne.MakeGenericMethod(type.RawType);
                 return (Func<RowSet, ColumnPipe>)meth.Invoke(this, new object[] { type });
             }
 
-            private Func<RowSet, ColumnPipe> GetCreatorOneCore<T>(PrimitiveType type)
+            private Func<RowSet, ColumnPipe> GetCreatorOneCore<T>(PrimitiveDataViewType type)
             {
-                Contracts.Assert(type.IsStandardScalar || type.IsKey);
+                Contracts.Assert(type.IsStandardScalar() || type is KeyDataViewType);
                 Contracts.Assert(typeof(T) == type.RawType);
-                var fn = _conv.GetParseConversion<T>(type);
-                return rows => new PrimitivePipe<T>(rows, fn);
+                var fn = _conv.GetTryParseConversion<T>(type);
+                return rows => new PrimitivePipe<T>(rows, type, fn);
             }
 
-            private Func<RowSet, ColumnPipe> GetCreatorVecCore(PrimitiveType type)
+            private Func<RowSet, ColumnPipe> GetCreatorVecCore(PrimitiveDataViewType type)
             {
                 MethodInfo meth = _methVec.MakeGenericMethod(type.RawType);
                 return (Func<RowSet, ColumnPipe>)meth.Invoke(this, new object[] { type });
             }
 
-            private Func<RowSet, ColumnPipe> GetCreatorVecCore<T>(PrimitiveType type)
+            private Func<RowSet, ColumnPipe> GetCreatorVecCore<T>(PrimitiveDataViewType type)
             {
-                Contracts.Assert(type.IsStandardScalar || type.IsKey);
+                Contracts.Assert(type.IsStandardScalar() || type is KeyDataViewType);
                 Contracts.Assert(typeof(T) == type.RawType);
-                var fn = _conv.GetParseConversion<T>(type);
-                return rows => new VectorPipe<T>(rows, fn);
+                var fn = _conv.GetTryParseConversion<T>(type);
+                return rows => new VectorPipe<T>(rows, type, fn);
             }
 
-            public Func<RowSet, ColumnPipe> GetCreatorOne(KeyType key)
+            public Func<RowSet, ColumnPipe> GetCreatorOne(KeyDataViewType key)
             {
                 // Have to produce a specific one - can't use a cached one.
                 MethodInfo meth = _methOne.MakeGenericMethod(key.RawType);
                 return (Func<RowSet, ColumnPipe>)meth.Invoke(this, new object[] { key });
             }
 
-            public Func<RowSet, ColumnPipe> GetCreatorVec(KeyType key)
+            public Func<RowSet, ColumnPipe> GetCreatorVec(KeyDataViewType key)
             {
                 // Have to produce a specific one - can't use a cached one.
                 MethodInfo meth = _methVec.MakeGenericMethod(key.RawType);
                 return (Func<RowSet, ColumnPipe>)meth.Invoke(this, new object[] { key });
             }
 
-            public Func<RowSet, ColumnPipe> GetCreatorOne(DataKind kind)
+            public Func<RowSet, ColumnPipe> GetCreatorOne(InternalDataKind kind)
             {
                 int index = kind.ToIndex();
                 Contracts.Assert(0 <= index & index < _creatorsOne.Length);
                 return _creatorsOne[index];
             }
 
-            public Func<RowSet, ColumnPipe> GetCreatorVec(DataKind kind)
+            public Func<RowSet, ColumnPipe> GetCreatorVec(InternalDataKind kind)
             {
                 int index = kind.ToIndex();
                 Contracts.Assert(0 <= index & index < _creatorsOne.Length);
@@ -163,7 +160,6 @@ namespace Microsoft.ML.Runtime.Data
                         _ch.Info("Processed {0} rows with {1} bad values and {2} format errors",
                             _rowCount, _badCount, _fmtCount);
                     }
-                    _ch.Done();
                     _ch.Dispose();
                 }
             }
@@ -219,6 +215,8 @@ namespace Microsoft.ML.Runtime.Data
         {
             public readonly RowSet Rows;
 
+            public abstract bool HasNA { get; }
+
             protected ColumnPipe(RowSet rows)
             {
                 Contracts.AssertValue(rows);
@@ -240,12 +238,16 @@ namespace Microsoft.ML.Runtime.Data
             // Has length Rows.Count, so indexed by irow.
             private TResult[] _values;
 
-            public PrimitivePipe(RowSet rows, TryParseMapper<TResult> conv)
+            public override bool HasNA { get; }
+
+            public PrimitivePipe(RowSet rows, PrimitiveDataViewType type, TryParseMapper<TResult> conv)
                 : base(rows)
             {
                 Contracts.AssertValue(conv);
+                Contracts.Assert(typeof(TResult) == type.RawType);
                 _conv = conv;
                 _values = new TResult[Rows.Count];
+                HasNA = Conversions.Instance.TryGetIsNAPredicate(type, out var del);
             }
 
             public override void Reset(int irow, int size)
@@ -259,7 +261,7 @@ namespace Microsoft.ML.Runtime.Data
             {
                 Contracts.Assert(0 <= irow && irow < _values.Length);
                 Contracts.Assert(index == 0);
-                return _conv(ref text, out _values[irow]);
+                return _conv(in text, out _values[irow]);
             }
 
             public void Get(ref TResult value)
@@ -279,6 +281,8 @@ namespace Microsoft.ML.Runtime.Data
         private sealed class VectorPipe<TItem> : ColumnPipe
         {
             private readonly TryParseMapper<TItem> _conv;
+
+            public override bool HasNA { get; }
 
             private class VectorValue
             {
@@ -338,7 +342,7 @@ namespace Microsoft.ML.Runtime.Data
                     Contracts.Assert(_indexPrev < index & index < _size);
 
                     TItem tmp = default(TItem);
-                    bool f = _conv(ref text, out tmp);
+                    bool f = _conv(in text, out tmp);
                     if (_count < _size)
                     {
                         if (_count < _size / 2)
@@ -394,42 +398,38 @@ namespace Microsoft.ML.Runtime.Data
                 {
                     AssertValid();
 
-                    var values = dst.Values;
-                    var indices = dst.Indices;
-
                     if (_count == 0)
                     {
-                        dst = new VBuffer<TItem>(_size, 0, values, indices);
+                        VBufferUtils.Resize(ref dst, _size, 0);
                         return;
                     }
 
-                    if (Utils.Size(values) < _count)
-                        values = new TItem[_count];
-                    Array.Copy(_values, values, _count);
+                    var editor = VBufferEditor.Create(ref dst, _size, _count);
+                    _values.AsSpan(0, _count).CopyTo(editor.Values);
                     if (_count == _size)
                     {
-                        dst = new VBuffer<TItem>(_size, values, indices);
+                        dst = editor.Commit();
                         return;
                     }
 
-                    if (Utils.Size(indices) < _count)
-                        indices = new int[_count];
-                    Array.Copy(_indices, indices, _count);
-                    dst = new VBuffer<TItem>(_size, _count, values, indices);
+                    _indices.AsSpan(0, _count).CopyTo(editor.Indices);
+                    dst = editor.Commit();
                 }
             }
 
             // Has length Rows.Count, so indexed by irow.
             private VectorValue[] _values;
 
-            public VectorPipe(RowSet rows, TryParseMapper<TItem> conv)
+            public VectorPipe(RowSet rows, PrimitiveDataViewType type, TryParseMapper<TItem> conv)
                 : base(rows)
             {
                 Contracts.AssertValue(conv);
+                Contracts.Assert(typeof(TItem) == type.RawType);
                 _conv = conv;
                 _values = new VectorValue[Rows.Count];
                 for (int i = 0; i < _values.Length; i++)
                     _values[i] = new VectorValue(this);
+                HasNA = Conversions.Instance.TryGetIsNAPredicate(type, out var del);
             }
 
             public override void Reset(int irow, int size)
@@ -637,7 +637,7 @@ namespace Microsoft.ML.Runtime.Data
             }
 
             private readonly char[] _separators;
-            private readonly Options _flags;
+            private readonly OptionFlags _flags;
             private readonly int _inputSize;
             private readonly ColInfo[] _infos;
 
@@ -654,27 +654,31 @@ namespace Microsoft.ML.Runtime.Data
                 _infos = parent._bindings.Infos;
                 _creator = new Func<RowSet, ColumnPipe>[_infos.Length];
                 var cache = ValueCreatorCache.Instance;
-                var mapOne = new Dictionary<DataKind, Func<RowSet, ColumnPipe>>();
-                var mapVec = new Dictionary<DataKind, Func<RowSet, ColumnPipe>>();
+                var mapOne = new Dictionary<InternalDataKind, Func<RowSet, ColumnPipe>>();
+                var mapVec = new Dictionary<InternalDataKind, Func<RowSet, ColumnPipe>>();
                 for (int i = 0; i < _creator.Length; i++)
                 {
                     var info = _infos[i];
 
-                    if (info.ColType.ItemType.IsKey)
+                    if (info.ColType is KeyDataViewType keyType)
                     {
-                        if (!info.ColType.IsVector)
-                            _creator[i] = cache.GetCreatorOne(info.ColType.AsKey);
-                        else
-                            _creator[i] = cache.GetCreatorVec(info.ColType.ItemType.AsKey);
+                        _creator[i] = cache.GetCreatorOne(keyType);
                         continue;
                     }
 
-                    DataKind kind = info.ColType.ItemType.RawKind;
-                    Contracts.Assert(kind != 0);
-                    var map = info.ColType.IsVector ? mapVec : mapOne;
+                    VectorDataViewType vectorType = info.ColType as VectorDataViewType;
+                    if (vectorType?.ItemType is KeyDataViewType vectorKeyType)
+                    {
+                        _creator[i] = cache.GetCreatorVec(vectorKeyType);
+                        continue;
+                    }
+
+                    DataViewType itemType = vectorType?.ItemType ?? info.ColType;
+                    Contracts.Assert(itemType is KeyDataViewType || itemType.IsStandardScalar());
+                    var map = vectorType != null ? mapVec : mapOne;
                     if (!map.TryGetValue(info.Kind, out _creator[i]))
                     {
-                        var fn = info.ColType.IsVector ?
+                        var fn = vectorType != null ?
                             cache.GetCreatorVec(info.Kind) :
                             cache.GetCreatorOne(info.Kind);
                         map.Add(info.Kind, fn);
@@ -701,7 +705,7 @@ namespace Microsoft.ML.Runtime.Data
                 {
                     foreach (var line in lines)
                     {
-                        var text = (parent._flags & Options.TrimWhitespace) != 0 ? ReadOnlyMemoryUtils.TrimEndWhiteSpace(line) : line;
+                        var text = (parent._flags & OptionFlags.TrimWhitespace) != 0 ? ReadOnlyMemoryUtils.TrimEndWhiteSpace(line) : line;
                         if (text.IsEmpty)
                             continue;
 
@@ -747,7 +751,7 @@ namespace Microsoft.ML.Runtime.Data
                 for (int iinfo = 0; iinfo < infos.Length; iinfo++)
                 {
                     var info = infos[iinfo];
-                    if (!info.ColType.IsKnownSizeVector)
+                    if (!info.ColType.IsKnownSizeVector())
                         continue;
                     bldr.Reset(info.SizeBase, false);
                     int ivDst = 0;
@@ -824,7 +828,7 @@ namespace Microsoft.ML.Runtime.Data
                 var impl = (HelperImpl)helper;
                 var lineSpan = text.AsMemory();
                 var span = lineSpan.Span;
-                if ((_flags & Options.TrimWhitespace) != 0)
+                if ((_flags & OptionFlags.TrimWhitespace) != 0)
                     lineSpan = TrimEndWhiteSpace(lineSpan, span);
                 try
                 {
@@ -879,7 +883,7 @@ namespace Microsoft.ML.Runtime.Data
 
                 public readonly FieldSet Fields;
 
-                public HelperImpl(ParseStats stats, Options flags, char[] seps, int inputSize, int srcNeeded)
+                public HelperImpl(ParseStats stats, OptionFlags flags, char[] seps, int inputSize, int srcNeeded)
                 {
                     Contracts.AssertValue(stats);
                     // inputSize == 0 means unknown.
@@ -895,8 +899,8 @@ namespace Microsoft.ML.Runtime.Data
                     _sepContainsSpace = IsSep(' ');
                     _inputSize = inputSize;
                     _srcNeeded = srcNeeded;
-                    _quoting = (flags & Options.AllowQuoting) != 0;
-                    _sparse = (flags & Options.AllowSparse) != 0;
+                    _quoting = (flags & OptionFlags.AllowQuoting) != 0;
+                    _sparse = (flags & OptionFlags.AllowSparse) != 0;
                     _sb = new StringBuilder();
                     _blank = ReadOnlyMemory<char>.Empty;
                     Fields = new FieldSet();
@@ -1012,18 +1016,8 @@ namespace Microsoft.ML.Runtime.Data
                                 }
                                 var spanT = Fields.Spans[Fields.Count - 1];
 
-                                // Note that Convert throws exception the text is unparsable.
-                                int csrc = default;
-                                try
-                                {
-                                    Conversions.Instance.Convert(ref spanT, ref csrc);
-                                }
-                                catch
-                                {
-                                    Contracts.Assert(csrc == default);
-                                }
-
-                                if (csrc <= 0)
+                                int csrc;
+                                if (!Conversions.Instance.TryParse(in spanT, out csrc) || csrc <= 0)
                                 {
                                     _stats.LogBadFmt(ref scan, "Bad dimensionality or ambiguous sparse item. Use sparse=- for non-sparse file, and/or quote the value.");
                                     break;
@@ -1279,7 +1273,7 @@ namespace Microsoft.ML.Runtime.Data
                     var v = rows.Pipes[iinfo];
                     Contracts.Assert(v != null);
 
-                    if (!info.ColType.IsVector)
+                    if (!(info.ColType is VectorDataViewType))
                         ProcessOne(fields, info, v, irow, line);
                     else
                         ProcessVec(srcLim, fields, info, v, irow, line);
@@ -1289,7 +1283,7 @@ namespace Microsoft.ML.Runtime.Data
             private void ProcessVec(int srcLim, FieldSet fields, ColInfo info, ColumnPipe v, int irow, long line)
             {
                 Contracts.Assert(srcLim >= 0);
-                Contracts.Assert(info.ColType.IsVector);
+                Contracts.Assert(info.ColType is VectorDataViewType);
                 Contracts.Assert(info.SizeBase > 0 || info.IsegVariable >= 0);
 
                 int sizeVar = 0;
@@ -1331,7 +1325,11 @@ namespace Microsoft.ML.Runtime.Data
                             var srcCur = fields.Indices[isrc];
                             Contracts.Assert(min <= srcCur & srcCur < lim);
                             if (!v.Consume(irow, indexBase + srcCur, ref fields.Spans[isrc]))
+                            {
+                                if (!v.HasNA)
+                                    throw Contracts.Except($"Could not parse value {fields.Spans[isrc]} in slot {indexBase + srcCur} of column {info.Name} in line {line}");
                                 v.Rows.Stats.LogBadValue(line, info.Name, indexBase + srcCur);
+                            }
                         }
                     }
                     ivDst += sizeSeg;
@@ -1341,7 +1339,7 @@ namespace Microsoft.ML.Runtime.Data
 
             private void ProcessOne(FieldSet vs, ColInfo info, ColumnPipe v, int irow, long line)
             {
-                Contracts.Assert(!info.ColType.IsVector);
+                Contracts.Assert(!(info.ColType is VectorDataViewType));
                 Contracts.Assert(Utils.Size(info.Segments) == 1);
                 Contracts.Assert(info.Segments[0].Lim == info.Segments[0].Min + 1);
 
@@ -1350,7 +1348,11 @@ namespace Microsoft.ML.Runtime.Data
                 if (isrc < vs.Count && vs.Indices[isrc] == src)
                 {
                     if (!v.Consume(irow, 0, ref vs.Spans[isrc]))
+                    {
+                        if (!v.HasNA)
+                            throw Contracts.Except($"Could not parse value {vs.Spans[isrc]} in line {line}, column {info.Name}");
                         v.Rows.Stats.LogBadValue(line, info.Name);
+                    }
                 }
                 else
                     v.Reset(irow, 0);

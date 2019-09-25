@@ -4,11 +4,13 @@
 
 using System.Text;
 using System.Text.RegularExpressions;
-using Microsoft.ML.Runtime.Internal.Calibration;
+using Microsoft.ML.Calibrators;
+using Microsoft.ML.Runtime;
 
-namespace Microsoft.ML.Runtime.Internal.Utilities
+namespace Microsoft.ML.Internal.Utilities
 {
-    public static class IniFileUtils
+    [BestFriend]
+    internal static class IniFileUtils
     {
         // This could be done better by having something that actually parses the .ini file and provides more
         //  functionality. For now, we'll just provide the minimum needed. If we went the nicer route, probably would
@@ -51,10 +53,10 @@ namespace Microsoft.ML.Runtime.Internal.Utilities
             StringBuilder newEvaluator = new StringBuilder();
             newEvaluator.AppendLine("EvaluatorType=Aggregator");
             newEvaluator.AppendLine("Type=Sigmoid");
-            newEvaluator.AppendLine("Bias=" + -calibrator.ParamB);
+            newEvaluator.AppendLine("Bias=" + -calibrator.Offset);
             newEvaluator.AppendLine("NumNodes=1");
             newEvaluator.AppendLine("Nodes=E:" + NumEvaluators(originalIni));
-            newEvaluator.AppendLine("Weights=" + -calibrator.ParamA);
+            newEvaluator.AppendLine("Weights=" + -calibrator.Slope);
             return newEvaluator.ToString();
         }
     }

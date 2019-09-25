@@ -6,45 +6,49 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Model;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Runtime;
 
-namespace Microsoft.ML.Runtime.Data
+namespace Microsoft.ML.Data
 {
     /// <summary>
     /// Base class for scoring rows independently. This assumes that all columns produced by the
     /// underlying <see cref="ISchemaBoundRowMapper"/> should be exposed, as well as zero or more
     /// "derived" columns.
     /// </summary>
-    public abstract class RowToRowScorerBase : RowToRowMapperTransformBase, IDataScorerTransform
+    internal abstract class RowToRowScorerBase : RowToRowMapperTransformBase, IDataScorerTransform
     {
-        public abstract class BindingsBase : ScorerBindingsBase
+        [BestFriend]
+        private protected abstract class BindingsBase : ScorerBindingsBase
         {
             public readonly ISchemaBoundRowMapper RowMapper;
 
-            protected BindingsBase(ISchema schema, ISchemaBoundRowMapper mapper, string suffix, bool user, params string[] namesDerived)
+            protected BindingsBase(DataViewSchema schema, ISchemaBoundRowMapper mapper, string suffix, bool user, params string[] namesDerived)
                 : base(schema, mapper, suffix, user, namesDerived)
             {
                 RowMapper = mapper;
             }
         }
 
-        protected readonly ISchemaBindableMapper Bindable;
+        [BestFriend]
+        private protected readonly ISchemaBindableMapper Bindable;
 
-        protected RowToRowScorerBase(IHostEnvironment env, IDataView input, string registrationName, ISchemaBindableMapper bindable)
+        [BestFriend]
+        private protected RowToRowScorerBase(IHostEnvironment env, IDataView input, string registrationName, ISchemaBindableMapper bindable)
             : base(env, registrationName, input)
         {
             Contracts.AssertValue(bindable);
             Bindable = bindable;
         }
 
-        protected RowToRowScorerBase(IHost host, ModelLoadContext ctx, IDataView input)
+        [BestFriend]
+        private protected RowToRowScorerBase(IHost host, ModelLoadContext ctx, IDataView input)
             : base(host, input)
         {
             ctx.LoadModel<ISchemaBindableMapper, SignatureLoadModel>(host, out Bindable, "SchemaBindableMapper");
         }
 
-        public sealed override void Save(ModelSaveContext ctx)
+        private protected sealed override void SaveModel(ModelSaveContext ctx)
         {
             Contracts.AssertValue(ctx);
             ctx.CheckAtModel();
@@ -55,46 +59,46 @@ namespace Microsoft.ML.Runtime.Data
         /// <summary>
         /// The main save method handles saving the _bindable. This should do everything else.
         /// </summary>
-        protected abstract void SaveCore(ModelSaveContext ctx);
+        [BestFriend]
+        private protected abstract void SaveCore(ModelSaveContext ctx);
 
-        /// <summary>
-        /// For the ITransformTemplate implementation.
-        /// </summary>
-        public abstract IDataTransform ApplyToData(IHostEnvironment env, IDataView newSource);
+        private protected abstract IDataTransform ApplyToDataCore(IHostEnvironment env, IDataView newSource);
+
+        IDataTransform ITransformTemplate.ApplyToData(IHostEnvironment env, IDataView newSource)
+            => ApplyToDataCore(env, newSource);
+        internal IDataView ApplyToData(IHostEnvironment env, IDataView newSource)
+            => ApplyToDataCore(env, newSource);
 
         /// <summary>
         /// Derived classes provide the specific bindings object.
         /// </summary>
-        protected abstract BindingsBase GetBindings();
-
-        public sealed override ISchema Schema
-        {
-            get { return GetBindings(); }
-        }
+        [BestFriend]
+        private protected abstract BindingsBase GetBindings();
 
         /// <summary>
-        /// Produces the set of active columns for the scorer (as a bool[] of length bindings.ColumnCount),
-        /// a predicate for the needed active input columns, and a predicate for the needed active
-        /// mapper columns.
+        /// Produces the set of active columns for the scorer (as a bool[] of length bindings.ColumnCount).
         /// </summary>
-        private static bool[] GetActive(BindingsBase bindings, Func<int, bool> predicate,
-            out Func<int, bool> predicateInput, out Func<int, bool> predicateMapper)
+        private static bool[] GetActive(BindingsBase bindings,
+            IEnumerable<DataViewSchema.Column> columns,
+            out IEnumerable<DataViewSchema.Column> inputColumns,
+            out IEnumerable<DataViewSchema.Column> activeRowMapperCols)
         {
-            var active = bindings.GetActive(predicate);
+            var active = bindings.GetActive(columns);
             Contracts.Assert(active.Length == bindings.ColumnCount);
 
-            var activeInput = bindings.GetActiveInput(predicate);
-            Contracts.Assert(activeInput.Length == bindings.Input.ColumnCount);
+            var activeInput = bindings.GetActiveInput(columns);
+            Contracts.Assert(activeInput.Length == bindings.Input.Count);
 
             // Get a predicate that determines which Mapper outputs are active.
-            predicateMapper = bindings.GetActiveMapperColumns(active);
+            var predicateMapper = bindings.GetActiveMapperColumns(active);
+            Func<int, bool> localMapper = predicateMapper;
 
-            // Now map those to active input columns.
-            var predicateInputForMapper = bindings.RowMapper.GetDependencies(predicateMapper);
+            // Get the active output columns
+            activeRowMapperCols = bindings.RowMapper.OutputSchema.Where(c => predicateMapper(c.Index));
+            var colsInputForMapper = bindings.RowMapper.GetDependenciesForNewColumns(activeRowMapperCols);
 
-            // Combine the two sets of input columns.
-            predicateInput =
-                col => 0 <= col && col < activeInput.Length && (activeInput[col] || predicateInputForMapper(col));
+            var activeInCols = bindings.Input.Where(c => c.Index < activeInput.Length && activeInput[c.Index]);
+            inputColumns = activeInCols.Union(colsInputForMapper);
 
             return active;
         }
@@ -118,73 +122,73 @@ namespace Microsoft.ML.Runtime.Data
         /// </summary>
         protected abstract bool WantParallelCursors(Func<int, bool> predicate);
 
-        protected override IRowCursor GetRowCursorCore(Func<int, bool> predicate, IRandom rand = null)
+        protected override DataViewRowCursor GetRowCursorCore(IEnumerable<DataViewSchema.Column> columnsNeeded, Random rand = null)
         {
-            Contracts.AssertValue(predicate);
             Contracts.AssertValueOrNull(rand);
 
             var bindings = GetBindings();
-            Func<int, bool> predicateInput;
-            Func<int, bool> predicateMapper;
-            var active = GetActive(bindings, predicate, out predicateInput, out predicateMapper);
-            var input = Source.GetRowCursor(predicateInput, rand);
-            return new RowCursor(Host, this, input, active, predicateMapper);
+            var active = GetActive(bindings,
+                columnsNeeded,
+                out IEnumerable<DataViewSchema.Column> inputCols,
+                out IEnumerable<DataViewSchema.Column> activeMapperColumns);
+            var input = Source.GetRowCursor(inputCols, rand);
+            return new Cursor(Host, this, input, active, activeMapperColumns);
         }
 
-        public override IRowCursor[] GetRowCursorSet(out IRowCursorConsolidator consolidator, Func<int, bool> predicate, int n, IRandom rand = null)
+        public override DataViewRowCursor[] GetRowCursorSet(IEnumerable<DataViewSchema.Column> columnsNeeded, int n, Random rand = null)
         {
-            Host.CheckValue(predicate, nameof(predicate));
             Host.CheckValueOrNull(rand);
 
+            var predicate = RowCursorUtils.FromColumnsToPredicate(columnsNeeded, OutputSchema);
+
             var bindings = GetBindings();
-            Func<int, bool> predicateInput;
-            Func<int, bool> predicateMapper;
-            var active = GetActive(bindings, predicate, out predicateInput, out predicateMapper);
-            var inputs = Source.GetRowCursorSet(out consolidator, predicateInput, n, rand);
+            var active = GetActive(bindings, columnsNeeded,
+               out IEnumerable<DataViewSchema.Column> inputCols,
+               out IEnumerable<DataViewSchema.Column> activeMapperColumns);
+            var inputs = Source.GetRowCursorSet(inputCols, n, rand);
             Contracts.AssertNonEmpty(inputs);
 
             if (inputs.Length == 1 && n > 1 && WantParallelCursors(predicate) && (Source.GetRowCount() ?? int.MaxValue) > n)
-                inputs = DataViewUtils.CreateSplitCursors(out consolidator, Host, inputs[0], n);
+                inputs = DataViewUtils.CreateSplitCursors(Host, inputs[0], n);
             Contracts.AssertNonEmpty(inputs);
 
-            var cursors = new IRowCursor[inputs.Length];
+            var cursors = new DataViewRowCursor[inputs.Length];
             for (int i = 0; i < inputs.Length; i++)
-                cursors[i] = new RowCursor(Host, this, inputs[i], active, predicateMapper);
+                cursors[i] = new Cursor(Host, this, inputs[i], active, activeMapperColumns);
             return cursors;
         }
 
-        protected override Delegate[] CreateGetters(IRow input, Func<int, bool> active, out Action disp)
+        protected override Delegate[] CreateGetters(DataViewRow input, IEnumerable<DataViewSchema.Column> activeColumns, out Action disp)
         {
             var bindings = GetBindings();
-            Func<int, bool> predicateInput;
-            Func<int, bool> predicateMapper;
-            GetActive(bindings, active, out predicateInput, out predicateMapper);
-            var output = bindings.RowMapper.GetRow(input, predicateMapper, out disp);
-            Func<int, bool> activeInfos = iinfo => active(bindings.MapIinfoToCol(iinfo));
+            IEnumerable<DataViewSchema.Column> inputColumns;
+            GetActive(bindings, activeColumns, out inputColumns, out IEnumerable<DataViewSchema.Column> activeMapperColumns);
+            var output = bindings.RowMapper.GetRow(input, activeMapperColumns);
+            var activeIndices = new HashSet<int>(activeColumns.Select(c => c.Index));
+            Func<int, bool> activeInfos = iinfo => activeIndices.Contains(bindings.MapIinfoToCol(iinfo));
+            disp = output.Dispose;
             return GetGetters(output, activeInfos);
         }
 
-        protected override Func<int, bool> GetDependenciesCore(Func<int, bool> predicate)
+        protected override IEnumerable<DataViewSchema.Column> GetDependenciesCore(IEnumerable<DataViewSchema.Column> columns)
         {
             var bindings = GetBindings();
-            Func<int, bool> predicateInput;
-            Func<int, bool> predicateMapper;
-            GetActive(bindings, predicate, out predicateInput, out predicateMapper);
-            return predicateInput;
+            GetActive(bindings, columns, out IEnumerable<DataViewSchema.Column> inputColumns, out IEnumerable<DataViewSchema.Column> predicateMapper);
+            return inputColumns;
         }
 
         /// <summary>
         /// Create and fill an array of getters of size InfoCount. The indices of the non-null entries in the
         /// result should be exactly those for which predicate(iinfo) is true.
         /// </summary>
-        protected abstract Delegate[] GetGetters(IRow output, Func<int, bool> predicate);
+        protected abstract Delegate[] GetGetters(DataViewRow output, Func<int, bool> predicate);
 
-        protected static Delegate[] GetGettersFromRow(IRow row, Func<int, bool> predicate)
+        protected static Delegate[] GetGettersFromRow(DataViewRow row, Func<int, bool> predicate)
         {
             Contracts.AssertValue(row);
             Contracts.AssertValue(predicate);
 
-            var getters = new Delegate[row.Schema.ColumnCount];
+            var getters = new Delegate[row.Schema.Count];
             for (int col = 0; col < getters.Length; col++)
             {
                 if (predicate(col))
@@ -193,24 +197,24 @@ namespace Microsoft.ML.Runtime.Data
             return getters;
         }
 
-        protected static Delegate GetGetterFromRow(IRow row, int col)
+        protected static Delegate GetGetterFromRow(DataViewRow row, int col)
         {
             Contracts.AssertValue(row);
-            Contracts.Assert(0 <= col && col < row.Schema.ColumnCount);
-            Contracts.Assert(row.IsColumnActive(col));
+            Contracts.Assert(0 <= col && col < row.Schema.Count);
+            Contracts.Assert(row.IsColumnActive(row.Schema[col]));
 
-            var type = row.Schema.GetColumnType(col);
-            Func<IRow, int, ValueGetter<int>> del = GetGetterFromRow<int>;
+            var type = row.Schema[col].Type;
+            Func<DataViewRow, int, ValueGetter<int>> del = GetGetterFromRow<int>;
             var meth = del.GetMethodInfo().GetGenericMethodDefinition().MakeGenericMethod(type.RawType);
             return (Delegate)meth.Invoke(null, new object[] { row, col });
         }
 
-        protected static ValueGetter<T> GetGetterFromRow<T>(IRow output, int col)
+        protected static ValueGetter<T> GetGetterFromRow<T>(DataViewRow output, int col)
         {
             Contracts.AssertValue(output);
-            Contracts.Assert(0 <= col && col < output.Schema.ColumnCount);
-            Contracts.Assert(output.IsColumnActive(col));
-            return output.GetGetter<T>(col);
+            Contracts.Assert(0 <= col && col < output.Schema.Count);
+            Contracts.Assert(output.IsColumnActive(output.Schema[col]));
+            return output.GetGetter<T>(output.Schema[col]);
         }
 
         protected override int MapColumnIndex(out bool isSrc, int col)
@@ -219,59 +223,75 @@ namespace Microsoft.ML.Runtime.Data
             return bindings.MapColumnIndex(out isSrc, col);
         }
 
-        protected sealed class RowCursor : SynchronizedCursorBase<IRowCursor>, IRowCursor
+        private sealed class Cursor : SynchronizedCursorBase
         {
             private readonly BindingsBase _bindings;
             private readonly bool[] _active;
             private readonly Delegate[] _getters;
-            private readonly Action _disposer;
+            private readonly DataViewRow _output;
+            private bool _disposed;
 
-            public ISchema Schema => _bindings;
+            public override DataViewSchema Schema { get; }
 
-            public RowCursor(IChannelProvider provider, RowToRowScorerBase parent, IRowCursor input, bool[] active, Func<int, bool> predicateMapper)
+            public Cursor(IChannelProvider provider, RowToRowScorerBase parent, DataViewRowCursor input, bool[] active, IEnumerable<DataViewSchema.Column> activeMapperColumns)
                 : base(provider, input)
             {
                 Ch.AssertValue(parent);
                 Ch.AssertValue(active);
-                Ch.AssertValue(predicateMapper);
+                Ch.AssertValue(activeMapperColumns);
 
                 _bindings = parent.GetBindings();
+                Schema = parent.OutputSchema;
                 Ch.Assert(active.Length == _bindings.ColumnCount);
                 _active = active;
 
-                var output = _bindings.RowMapper.GetRow(input, predicateMapper, out _disposer);
+                _output = _bindings.RowMapper.GetRow(input, activeMapperColumns);
                 try
                 {
-                    Ch.Assert(output.Schema == _bindings.RowMapper.Schema);
-                    _getters = parent.GetGetters(output, iinfo => active[_bindings.MapIinfoToCol(iinfo)]);
+                    Ch.Assert(_output.Schema == _bindings.RowMapper.OutputSchema);
+                    _getters = parent.GetGetters(_output, iinfo => active[_bindings.MapIinfoToCol(iinfo)]);
                 }
                 catch (Exception)
                 {
-                    _disposer?.Invoke();
+                    _output.Dispose();
                     throw;
                 }
             }
 
-            public override void Dispose()
+            protected override void Dispose(bool disposing)
             {
-                _disposer?.Invoke();
-                base.Dispose();
+                if (_disposed)
+                    return;
+                if (disposing)
+                    _output.Dispose();
+                _disposed = true;
+                base.Dispose(disposing);
             }
 
-            public bool IsColumnActive(int col)
+            /// <summary>
+            /// Returns whether the given column is active in this row.
+            /// </summary>
+            public override bool IsColumnActive(DataViewSchema.Column column)
             {
-                Ch.Check(0 <= col && col < _bindings.ColumnCount);
-                return _active[col];
+                Ch.Check(column.Index < _bindings.ColumnCount);
+                return _active[column.Index];
             }
 
-            public ValueGetter<TValue> GetGetter<TValue>(int col)
+            /// <summary>
+            /// Returns a value getter delegate to fetch the value of column with the given columnIndex, from the row.
+            /// This throws if the column is not active in this row, or if the type
+            /// <typeparamref name="TValue"/> differs from this column's type.
+            /// </summary>
+            /// <typeparam name="TValue"> is the column's content type.</typeparam>
+            /// <param name="column"> is the output column whose getter should be returned.</param>
+            public override ValueGetter<TValue> GetGetter<TValue>(DataViewSchema.Column column)
             {
-                Ch.Check(IsColumnActive(col));
+                Ch.Check(IsColumnActive(column));
 
                 bool isSrc;
-                int index = _bindings.MapColumnIndex(out isSrc, col);
+                int index = _bindings.MapColumnIndex(out isSrc, column.Index);
                 if (isSrc)
-                    return Input.GetGetter<TValue>(index);
+                    return Input.GetGetter<TValue>(Input.Schema[index]);
 
                 Ch.AssertValue(_getters);
                 var getter = _getters[index];
@@ -284,7 +304,8 @@ namespace Microsoft.ML.Runtime.Data
         }
     }
 
-    public abstract class ScorerArgumentsBase
+    [BestFriend]
+    internal abstract class ScorerArgumentsBase
     {
         // Output columns.
 
@@ -293,11 +314,12 @@ namespace Microsoft.ML.Runtime.Data
     }
 
     /// <summary>
-    /// Base bindings for a scorer based on an ISchemaBoundMapper. This assumes that input schema columns
+    /// Base bindings for a scorer based on an <see cref="ISchemaBoundMapper"/>. This assumes that input schema columns
     /// are echoed, followed by zero or more derived columns, followed by the mapper generated columns.
     /// The names of the derived columns and mapper generated columns have an optional suffix appended.
     /// </summary>
-    public abstract class ScorerBindingsBase : ColumnBindingsBase
+    [BestFriend]
+    internal abstract class ScorerBindingsBase : ColumnBindingsBase
     {
         /// <summary>
         /// The schema bound mapper.
@@ -315,9 +337,9 @@ namespace Microsoft.ML.Runtime.Data
         public readonly int DerivedColumnCount;
 
         private readonly uint _crtScoreSet;
-        private readonly MetadataUtils.MetadataGetter<uint> _getScoreColumnSetId;
+        private readonly AnnotationUtils.AnnotationGetter<uint> _getScoreColumnSetId;
 
-        protected ScorerBindingsBase(ISchema input, ISchemaBoundMapper mapper, string suffix, bool user, params string[] namesDerived)
+        protected ScorerBindingsBase(DataViewSchema input, ISchemaBoundMapper mapper, string suffix, bool user, params string[] namesDerived)
             : base(input, user, GetOutputNames(mapper, suffix, namesDerived))
         {
             Contracts.AssertValue(mapper);
@@ -329,7 +351,7 @@ namespace Microsoft.ML.Runtime.Data
             Suffix = suffix ?? "";
 
             int c;
-            var max = input.GetMaxMetadataKind(out c, MetadataUtils.Kinds.ScoreColumnSetId);
+            var max = input.GetMaxAnnotationKind(out c, AnnotationUtils.Kinds.ScoreColumnSetId);
             _crtScoreSet = checked(max + 1);
             _getScoreColumnSetId = GetScoreColumnSetId;
         }
@@ -340,14 +362,14 @@ namespace Microsoft.ML.Runtime.Data
             Contracts.AssertValueOrNull(suffix);
             Contracts.AssertValue(namesDerived);
 
-            var schema = mapper.Schema;
-            int count = namesDerived.Length + schema.ColumnCount;
+            var schema = mapper.OutputSchema;
+            int count = namesDerived.Length + schema.Count;
             var res = new string[count];
             int dst = 0;
             for (int i = 0; i < namesDerived.Length; i++)
                 res[dst++] = namesDerived[i] + suffix;
-            for (int i = 0; i < schema.ColumnCount; i++)
-                res[dst++] = schema.GetColumnName(i) + suffix;
+            for (int i = 0; i < schema.Count; i++)
+                res[dst++] = schema[i].Name + suffix;
             Contracts.Assert(dst == count);
             return res;
         }
@@ -398,47 +420,47 @@ namespace Microsoft.ML.Runtime.Data
             }
         }
 
-        public abstract void Save(ModelSaveContext ctx);
+        internal abstract void SaveModel(ModelSaveContext ctx);
 
-        protected override ColumnType GetColumnTypeCore(int iinfo)
+        protected override DataViewType GetColumnTypeCore(int iinfo)
         {
             Contracts.Assert(DerivedColumnCount <= iinfo && iinfo < InfoCount);
-            return Mapper.Schema.GetColumnType(iinfo - DerivedColumnCount);
+            return Mapper.OutputSchema[iinfo - DerivedColumnCount].Type;
         }
 
-        protected override IEnumerable<KeyValuePair<string, ColumnType>> GetMetadataTypesCore(int iinfo)
+        protected override IEnumerable<KeyValuePair<string, DataViewType>> GetAnnotationTypesCore(int iinfo)
         {
             Contracts.Assert(0 <= iinfo && iinfo < InfoCount);
 
-            yield return MetadataUtils.ScoreColumnSetIdType.GetPair(MetadataUtils.Kinds.ScoreColumnSetId);
+            yield return AnnotationUtils.ScoreColumnSetIdType.GetPair(AnnotationUtils.Kinds.ScoreColumnSetId);
             if (iinfo < DerivedColumnCount)
                 yield break;
-            foreach (var pair in Mapper.Schema.GetMetadataTypes(iinfo - DerivedColumnCount))
+            foreach (var pair in Mapper.OutputSchema[iinfo - DerivedColumnCount].Annotations.Schema.Select(c => new KeyValuePair<string, DataViewType>(c.Name, c.Type)))
                 yield return pair;
         }
 
-        protected override ColumnType GetMetadataTypeCore(string kind, int iinfo)
+        protected override DataViewType GetAnnotationTypeCore(string kind, int iinfo)
         {
             Contracts.Assert(0 <= iinfo && iinfo < InfoCount);
-            if (kind == MetadataUtils.Kinds.ScoreColumnSetId)
-                return MetadataUtils.ScoreColumnSetIdType;
+            if (kind == AnnotationUtils.Kinds.ScoreColumnSetId)
+                return AnnotationUtils.ScoreColumnSetIdType;
             if (iinfo < DerivedColumnCount)
                 return null;
-            return Mapper.Schema.GetMetadataTypeOrNull(kind, iinfo - DerivedColumnCount);
+            return Mapper.OutputSchema[iinfo - DerivedColumnCount].Annotations.Schema.GetColumnOrNull(kind)?.Type;
         }
 
-        protected override void GetMetadataCore<TValue>(string kind, int iinfo, ref TValue value)
+        protected override void GetAnnotationCore<TValue>(string kind, int iinfo, ref TValue value)
         {
             Contracts.Assert(0 <= iinfo && iinfo < InfoCount);
             switch (kind)
             {
-                case MetadataUtils.Kinds.ScoreColumnSetId:
+                case AnnotationUtils.Kinds.ScoreColumnSetId:
                     _getScoreColumnSetId.Marshal(iinfo, ref value);
                     break;
                 default:
                     if (iinfo < DerivedColumnCount)
-                        throw MetadataUtils.ExceptGetMetadata();
-                    Mapper.Schema.GetMetadata<TValue>(kind, iinfo - DerivedColumnCount, ref value);
+                        throw AnnotationUtils.ExceptGetAnnotation();
+                    Mapper.OutputSchema[iinfo - DerivedColumnCount].Annotations.GetValue(kind, ref value);
                     break;
             }
         }
@@ -455,8 +477,8 @@ namespace Microsoft.ML.Runtime.Data
             return
                 col =>
                 {
-                    Contracts.Assert(0 <= col && col < Mapper.Schema.ColumnCount);
-                    return 0 <= col && col < Mapper.Schema.ColumnCount &&
+                    Contracts.Assert(0 <= col && col < Mapper.OutputSchema.Count);
+                    return 0 <= col && col < Mapper.OutputSchema.Count &&
                         active[MapIinfoToCol(col + DerivedColumnCount)];
                 };
         }

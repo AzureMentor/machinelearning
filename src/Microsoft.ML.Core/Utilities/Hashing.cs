@@ -3,13 +3,14 @@
 // See the LICENSE file in the project root for more information.
 
 using System;
-using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Text;
+using Microsoft.ML.Runtime;
 
-namespace Microsoft.ML.Runtime.Internal.Utilities
+namespace Microsoft.ML.Internal.Utilities
 {
-    public static class Hashing
+    [BestFriend]
+    internal static class Hashing
     {
         private const uint _defaultSeed = (5381 << 16) + 5381;
 
@@ -89,6 +90,7 @@ namespace Microsoft.ML.Runtime.Internal.Utilities
         /// Make certain to also use <see cref="MixHash"/> on the final hashed value, if you
         /// depend upon having distinct bits.
         /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static uint MurmurRound(uint hash, uint chunk)
         {
             chunk *= 0xCC9E2D51;
@@ -282,6 +284,7 @@ namespace Microsoft.ML.Runtime.Internal.Utilities
             return hash;
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static uint Rotate(uint x, int r)
         {
             return (x << r) | (x >> (32 - r));

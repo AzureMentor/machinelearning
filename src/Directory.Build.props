@@ -12,8 +12,6 @@
     <WarningsNotAsErrors>$(WarningsNotAsErrors);1591</WarningsNotAsErrors>
 
     <CodeAnalysisRuleSet>$(MSBuildThisFileDirectory)\Source.ruleset</CodeAnalysisRuleSet>
-
-    <TargetArchitecture Condition="'$(TargetArchitecture)' == ''">x64</TargetArchitecture>
     
     <NativeAssetsBuiltPath>$(BaseOutputPath)$(TargetArchitecture).$(Configuration)\Native</NativeAssetsBuiltPath>
 
@@ -23,6 +21,18 @@
     <PackageRid>$(PackageRid)-$(TargetArchitecture)</PackageRid>
   </PropertyGroup>
 
+<!-- API Compat -->
+  <PropertyGroup>
+    <RunApiCompat Condition="'$(RunApiCompat)' == ''">$(IsStableProject)</RunApiCompat>
+    <ToolHostCmd>$(ToolsDir)dotnetcli/dotnet</ToolHostCmd>
+
+    <!-- only validate that the current implementation is compatible
+         with the old one, not vice-versa (since latest may have new
+         API missing from old) -->
+    <RunApiCompatForSrc>true</RunApiCompatForSrc>
+    <RunMatchingRefApiCompat>false</RunMatchingRefApiCompat>
+  </PropertyGroup>
+  
   <ItemGroup>
     <ProjectReference
       Condition="'$(UseMLCodeAnalyzer)' != 'false' and '$(MSBuildProjectExtension)' == '.csproj'"
@@ -34,4 +44,9 @@
       Include="StyleCop.Analyzers" Version="1.1.0-beta008" PrivateAssets="All" />
   </ItemGroup>
 
+  <ItemGroup>
+    <AdditionalFiles Include="$(MSBuildThisFileDirectory)stylecop.json">
+      <Link>stylecop.json</Link>
+    </AdditionalFiles>
+  </ItemGroup>
 </Project>

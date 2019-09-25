@@ -2,213 +2,357 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Microsoft.ML.Core.Data;
-using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Model;
-using Microsoft.ML.Runtime.Model.Onnx;
-using Microsoft.ML.Runtime.Model.Pfa;
-using Newtonsoft.Json.Linq;
 using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
+using Microsoft.ML;
+using Microsoft.ML.Data;
+using Microsoft.ML.Model.OnnxConverter;
+using Microsoft.ML.Model.Pfa;
+using Microsoft.ML.Runtime;
+using Microsoft.ML.Transforms;
+using Newtonsoft.Json.Linq;
 
-[assembly: LoadableClass(typeof(NormalizerTransformer), null, typeof(SignatureLoadModel),
-    "", NormalizerTransformer.LoaderSignature)]
+[assembly: LoadableClass(typeof(NormalizingTransformer), null, typeof(SignatureLoadModel),
+    "", NormalizingTransformer.LoaderSignature)]
 
-[assembly: LoadableClass(typeof(IRowMapper), typeof(NormalizerTransformer), null, typeof(SignatureLoadRowMapper),
-    "", NormalizerTransformer.LoaderSignature)]
+[assembly: LoadableClass(typeof(IRowMapper), typeof(NormalizingTransformer), null, typeof(SignatureLoadRowMapper),
+    "", NormalizingTransformer.LoaderSignature)]
 
-namespace Microsoft.ML.Runtime.Data
+[assembly: LoadableClass(typeof(IDataTransform), typeof(NormalizingTransformer), null, typeof(SignatureLoadDataTransform),
+    "", NormalizingTransformer.LoaderSignature, "NormalizeTransform")]
+
+namespace Microsoft.ML.Transforms
 {
-    public sealed class Normalizer : IEstimator<NormalizerTransformer>
+    /// <summary>
+    /// <see cref="IEstimator{TTransformer}"/> for the <see cref="NormalizingTransformer"/>.
+    /// </summary>
+    /// <remarks>
+    /// <format type="text/markdown"><![CDATA[
+    ///
+    /// ###  Estimator Characteristics
+    /// |  |  |
+    /// | -- | -- |
+    /// | Does this estimator need to look at the data to train its parameters? | Yes |
+    /// | Input column data type | <xref:System.Single> or <xref:System.Double> or a known-sized vector of those types. |
+    /// | Output column data type | The same data type as the input column |
+    ///
+    /// The resulting NormalizingEstimator will normalize the data in one of the following ways based upon how it was created:
+    /// * Min Max - A linear rescale that is based upon the minimum and maximum values for each row.
+    /// * Mean Variance - Rescale each row to unit variance and, optionally, zero mean.
+    /// * Log Mean Variance - Rescale each row to unit variance, optionally, zero mean based on computations in log scale.
+    /// * Binning - Bucketizes the data in each row and performs a linear rescale based on the calculated bins.
+    /// * Supervised Binning - Bucketize the data in each row and performas a linear rescale based on the calculated bins. The bin calculation is based on correlation of the Label column.
+    ///
+    /// ### Estimator Details
+    /// The interval of the normalized data depends on whether fixZero is specified or not. fixZero defaults to true.
+    /// When fixZero is false, the normalized interval is $[0,1]$ and the distribution of the normalized values depends on the normalization mode. For example, with Min Max, the minimum
+    /// and maximum values are mapped to 0 and 1 respectively and remaining values fall in between.
+    /// When fixZero is set, the normalized interval is $[-1,1]$ with the distribution of the normalized values depending on the normalization mode, but the behavior is different.
+    /// With Min Max, the distribution depends on how far away the number is from 0, resulting in the number with the largest distance being mapped to 1 if its a positive number
+    /// or -1 if its a negative number. The distance from 0 will affect the distribution with a majority of numbers that are closer together normalizing towards 0.
+    ///
+    /// The equation for the output $y$ of applying both Mean Variance and Log Mean Variance on input $x$ without
+    /// using the CDF option is: $y = (x - \text{offset}) \text{scale}$. Where offset and scale are computed during training.
+    ///
+    /// Using the CDF option it is: $y = 0.5 * (1 + \text{ERF}((x - \text{mean}) / (\text{standard deviation} * sqrt(2)))$.
+    /// Where ERF is the [Error Function](https://en.wikipedia.org/wiki/Error_function) used to approximate the CDF of a random variable assumed to
+    /// normally distributed. The mean and standard deviation are computing during training.
+    ///
+    /// To create this estimator use one of the following:
+    /// * [NormalizeMinMax](xref:Microsoft.ML.NormalizationCatalog.NormalizeMinMax(Microsoft.ML.TransformsCatalog, System.String, System.String, System.Int64, System.Boolean))
+    /// * [NormalizeMeanVariance](xref:Microsoft.ML.NormalizationCatalog.NormalizeMeanVariance(Microsoft.ML.TransformsCatalog,System.String,System.String,System.Int64,System.Boolean,System.Boolean))
+    /// * [NormalizeLogMeanVariance](xref:Microsoft.ML.NormalizationCatalog.NormalizeLogMeanVariance(Microsoft.ML.TransformsCatalog,System.String,System.String,System.Int64,System.Boolean))
+    /// * [NormalizeBinning](xref:Microsoft.ML.NormalizationCatalog.NormalizeBinning(Microsoft.ML.TransformsCatalog,System.String,System.String,System.Int64,System.Boolean,System.Int32))
+    /// * [NormalizeSupervisedBinning](xref:Microsoft.ML.NormalizationCatalog.NormalizeSupervisedBinning(Microsoft.ML.TransformsCatalog,System.String,System.String,System.String,System.Int64,System.Boolean,System.Int32,System.Int32))
+    ///
+    /// Check the above links for usage examples.
+    /// ]]>
+    /// </format>
+    /// </remarks>
+    public sealed class NormalizingEstimator : IEstimator<NormalizingTransformer>
     {
+        [BestFriend]
         internal static class Defaults
         {
-            public const bool FixZero = true;
+            public const bool EnsureZeroUntouched = true;
             public const bool MeanVarCdf = false;
             public const bool LogMeanVarCdf = true;
-            public const int NumBins = 1024;
-            public const int MinBinSize = 10;
-            public const long MaxTrainingExamples = 1000000000;
+            public const int MaximumBinCount = 1024;
+            public const int MininimumBinSize = 10;
+            public const long MaximumExampleCount = 1000000000;
         }
 
-        public enum NormalizerMode
+        [BestFriend]
+        internal enum NormalizationMode
         {
+            /// <summary>
+            /// Linear rescale such that minimum and maximum values are mapped between -1 and 1.
+            /// </summary>
             MinMax = 0,
+            /// <summary>
+            /// Rescale to unit variance and, optionally, zero mean.
+            /// </summary>
             MeanVariance = 1,
+            /// <summary>
+            /// Rescale to unit variance on the log scale.
+            /// </summary>
             LogMeanVariance = 2,
-            Binning = 3
+            /// <summary>
+            /// Bucketize and then rescale to between -1 and 1.
+            /// </summary>
+            Binning = 3,
+            /// <summary>
+            /// Bucketize and then rescale to between -1 and 1. Calculates bins based on correlation with the Label column.
+            /// </summary>
+            SupervisedBinning = 4
         }
 
-        public abstract class ColumnBase
+        [BestFriend]
+        internal abstract class ColumnOptionsBase
         {
-            public readonly string Input;
-            public readonly string Output;
-            public readonly long MaxTrainingExamples;
+            public readonly string Name;
+            public readonly string InputColumnName;
+            public readonly long MaximumExampleCount;
 
-            private protected ColumnBase(string input, string output, long maxTrainingExamples)
+            private protected ColumnOptionsBase(string name, string inputColumnName, long maximumExampleCount)
             {
-                Contracts.CheckNonEmpty(input, nameof(input));
-                Contracts.CheckNonEmpty(output, nameof(output));
-                Contracts.CheckParam(maxTrainingExamples > 1, nameof(maxTrainingExamples), "Must be greater than 1");
+                Contracts.CheckNonEmpty(name, nameof(name));
+                Contracts.CheckNonEmpty(inputColumnName, nameof(inputColumnName));
+                Contracts.CheckParam(maximumExampleCount > 1, nameof(maximumExampleCount), "Must be greater than 1");
 
-                Input = input;
-                Output = output;
-                MaxTrainingExamples = maxTrainingExamples;
+                Name = name;
+                InputColumnName = inputColumnName;
+                MaximumExampleCount = maximumExampleCount;
             }
 
-            internal abstract IColumnFunctionBuilder MakeBuilder(IHost host, int srcIndex, ColumnType srcType, IRowCursor cursor);
+            internal abstract IColumnFunctionBuilder MakeBuilder(IHost host, int srcIndex, DataViewType srcType, DataViewRowCursor cursor);
 
-            internal static ColumnBase Create(string input, string output, NormalizerMode mode)
+            internal static ColumnOptionsBase Create(string outputColumnName, string inputColumnName, NormalizationMode mode)
             {
                 switch (mode)
                 {
-                    case NormalizerMode.MinMax:
-                        return new MinMaxColumn(input, output);
-                    case NormalizerMode.MeanVariance:
-                        return new MeanVarColumn(input, output);
-                    case NormalizerMode.LogMeanVariance:
-                        return new LogMeanVarColumn(input, output);
-                    case NormalizerMode.Binning:
-                        return new BinningColumn(input, output);
+                    case NormalizationMode.MinMax:
+                        return new MinMaxColumnOptions(outputColumnName, inputColumnName);
+                    case NormalizationMode.MeanVariance:
+                        return new MeanVarianceColumnOptions(outputColumnName, inputColumnName);
+                    case NormalizationMode.LogMeanVariance:
+                        return new LogMeanVarianceColumnOptions(outputColumnName, inputColumnName);
+                    case NormalizationMode.Binning:
+                        return new BinningColumnOptions(outputColumnName, inputColumnName);
+                    case NormalizationMode.SupervisedBinning:
+                        return new SupervisedBinningColumOptions(outputColumnName, inputColumnName);
                     default:
                         throw Contracts.ExceptParam(nameof(mode), "Unknown normalizer mode");
                 }
             }
         }
 
-        public abstract class FixZeroColumnBase : ColumnBase
+        internal abstract class ControlZeroColumnOptionsBase : ColumnOptionsBase
         {
-            public readonly bool FixZero;
+            public readonly bool EnsureZeroUntouched;
 
-            private protected FixZeroColumnBase(string input, string output, long maxTrainingExamples, bool fixZero)
-                : base(input, output, maxTrainingExamples)
+            private protected ControlZeroColumnOptionsBase(string outputColumnName, string inputColumnName, long maximumExampleCount, bool ensureZeroUntouched)
+                : base(outputColumnName, inputColumnName, maximumExampleCount)
             {
-                FixZero = fixZero;
+                EnsureZeroUntouched = ensureZeroUntouched;
             }
         }
 
-        public sealed class MinMaxColumn : FixZeroColumnBase
+        [BestFriend]
+        internal sealed class MinMaxColumnOptions : ControlZeroColumnOptionsBase
         {
-            public MinMaxColumn(string input, string output = null, long maxTrainingExamples = Defaults.MaxTrainingExamples, bool fixZero = Defaults.FixZero)
-                : base(input, output ?? input, maxTrainingExamples, fixZero)
+            public MinMaxColumnOptions(string outputColumnName, string inputColumnName = null, long maximumExampleCount = Defaults.MaximumExampleCount, bool ensureZeroUntouched = Defaults.EnsureZeroUntouched)
+                : base(outputColumnName, inputColumnName ?? outputColumnName, maximumExampleCount, ensureZeroUntouched)
             {
             }
 
-            internal override IColumnFunctionBuilder MakeBuilder(IHost host, int srcIndex, ColumnType srcType, IRowCursor cursor)
+            internal override IColumnFunctionBuilder MakeBuilder(IHost host, int srcIndex, DataViewType srcType, DataViewRowCursor cursor)
                 => NormalizeTransform.MinMaxUtils.CreateBuilder(this, host, srcIndex, srcType, cursor);
         }
 
-        public sealed class MeanVarColumn : FixZeroColumnBase
+        [BestFriend]
+        internal sealed class MeanVarianceColumnOptions : ControlZeroColumnOptionsBase
         {
             public readonly bool UseCdf;
 
-            public MeanVarColumn(string input, string output = null,
-                long maxTrainingExamples = Defaults.MaxTrainingExamples, bool fixZero = Defaults.FixZero, bool useCdf = Defaults.MeanVarCdf)
-                : base(input, output ?? input, maxTrainingExamples, fixZero)
+            public MeanVarianceColumnOptions(string outputColumnName, string inputColumnName = null,
+                long maximumExampleCount = Defaults.MaximumExampleCount, bool fixZero = Defaults.EnsureZeroUntouched, bool useCdf = Defaults.MeanVarCdf)
+                : base(outputColumnName, inputColumnName ?? outputColumnName, maximumExampleCount, fixZero)
             {
                 UseCdf = useCdf;
             }
 
-            internal override IColumnFunctionBuilder MakeBuilder(IHost host, int srcIndex, ColumnType srcType, IRowCursor cursor)
+            internal override IColumnFunctionBuilder MakeBuilder(IHost host, int srcIndex, DataViewType srcType, DataViewRowCursor cursor)
                 => NormalizeTransform.MeanVarUtils.CreateBuilder(this, host, srcIndex, srcType, cursor);
         }
 
-        public sealed class LogMeanVarColumn : ColumnBase
+        [BestFriend]
+        internal sealed class LogMeanVarianceColumnOptions : ControlZeroColumnOptionsBase
         {
             public readonly bool UseCdf;
 
-            public LogMeanVarColumn(string input, string output = null,
-                long maxTrainingExamples = Defaults.MaxTrainingExamples, bool useCdf = Defaults.LogMeanVarCdf)
-                : base(input, output ?? input, maxTrainingExamples)
+            public LogMeanVarianceColumnOptions(string outputColumnName, string inputColumnName = null,
+                long maximumExampleCount = Defaults.MaximumExampleCount, bool useCdf = Defaults.LogMeanVarCdf, bool fixZero = Defaults.EnsureZeroUntouched)
+                : base(outputColumnName, inputColumnName ?? outputColumnName, maximumExampleCount, fixZero)
             {
                 UseCdf = useCdf;
             }
 
-            internal override IColumnFunctionBuilder MakeBuilder(IHost host, int srcIndex, ColumnType srcType, IRowCursor cursor)
+            internal override IColumnFunctionBuilder MakeBuilder(IHost host, int srcIndex, DataViewType srcType, DataViewRowCursor cursor)
                 => NormalizeTransform.LogMeanVarUtils.CreateBuilder(this, host, srcIndex, srcType, cursor);
         }
 
-        public sealed class BinningColumn : FixZeroColumnBase
+        [BestFriend]
+        internal sealed class BinningColumnOptions : ControlZeroColumnOptionsBase
         {
-            public readonly int NumBins;
+            public readonly int MaximumBinCount;
 
-            public BinningColumn(string input, string output = null,
-                long maxTrainingExamples = Defaults.MaxTrainingExamples, bool fixZero = true, int numBins = Defaults.NumBins)
-                : base(input, output ?? input, maxTrainingExamples, fixZero)
+            public BinningColumnOptions(string outputColumnName, string inputColumnName = null,
+                long maximumExampleCount = Defaults.MaximumExampleCount, bool fixZero = true, int maximumBinCount = Defaults.MaximumBinCount)
+                : base(outputColumnName, inputColumnName ?? outputColumnName, maximumExampleCount, fixZero)
             {
-                NumBins = numBins;
+                MaximumBinCount = maximumBinCount;
             }
 
-            internal override IColumnFunctionBuilder MakeBuilder(IHost host, int srcIndex, ColumnType srcType, IRowCursor cursor)
+            internal override IColumnFunctionBuilder MakeBuilder(IHost host, int srcIndex, DataViewType srcType, DataViewRowCursor cursor)
                 => NormalizeTransform.BinUtils.CreateBuilder(this, host, srcIndex, srcType, cursor);
         }
 
+        [BestFriend]
+        internal sealed class SupervisedBinningColumOptions : ControlZeroColumnOptionsBase
+        {
+            public readonly int MaximumBinCount;
+            public readonly string LabelColumnName;
+            public readonly int MininimumBinSize;
+
+            public SupervisedBinningColumOptions(string outputColumnName, string inputColumnName = null,
+                string labelColumnName = DefaultColumnNames.Label,
+                long maximumExampleCount = Defaults.MaximumExampleCount,
+                bool fixZero = true,
+                int maximumBinCount = Defaults.MaximumBinCount,
+                int mininimumBinSize = Defaults.MininimumBinSize)
+                : base(outputColumnName, inputColumnName ?? outputColumnName, maximumExampleCount, fixZero)
+            {
+                MaximumBinCount = maximumBinCount;
+                LabelColumnName = labelColumnName;
+                MininimumBinSize = mininimumBinSize;
+            }
+
+            internal override IColumnFunctionBuilder MakeBuilder(IHost host, int srcIndex, DataViewType srcType, DataViewRowCursor cursor)
+                => NormalizeTransform.SupervisedBinUtils.CreateBuilder(this, host, LabelColumnName, srcIndex, srcType, cursor);
+        }
+
         private readonly IHost _host;
-        private readonly ColumnBase[] _columns;
+        private readonly ColumnOptionsBase[] _columns;
 
-        public Normalizer(IHostEnvironment env, string columnName, NormalizerMode mode = NormalizerMode.MinMax)
-            : this(env, mode, (columnName, columnName))
+        /// <summary>
+        /// Initializes a new instance of <see cref="NormalizingEstimator"/>.
+        /// </summary>
+        /// <param name="env">Host Environment.</param>
+        /// <param name="outputColumnName">Name of the column resulting from the transformation of <paramref name="inputColumnName"/>.</param>
+        /// <param name="inputColumnName">Name of the column to transform.
+        /// If set to <see langword="null"/>, the value of the <paramref name="outputColumnName"/> will be used as source.</param>
+        /// <param name="mode">The <see cref="NormalizationMode"/> indicating how to the old values are mapped to the new values.</param>
+        internal NormalizingEstimator(IHostEnvironment env, string outputColumnName, string inputColumnName = null, NormalizationMode mode = NormalizationMode.MinMax)
+            : this(env, mode, (outputColumnName, inputColumnName ?? outputColumnName))
         {
         }
 
-        public Normalizer(IHostEnvironment env, NormalizerMode mode, params (string inputColumn, string outputColumn)[] columns)
+        /// <summary>
+        /// Initializes a new instance of <see cref="NormalizingEstimator"/>.
+        /// </summary>
+        /// <param name="env">The private instance of <see cref="IHostEnvironment"/>.</param>
+        /// <param name="mode">The <see cref="NormalizationMode"/> indicating how to the old values are mapped to the new values.</param>
+        /// <param name="columns">An array of (outputColumnName, inputColumnName) tuples.</param>
+        internal NormalizingEstimator(IHostEnvironment env, NormalizationMode mode, params (string outputColumnName, string inputColumnName)[] columns)
         {
             Contracts.CheckValue(env, nameof(env));
-            _host = env.Register(nameof(Normalizer));
+            _host = env.Register(nameof(NormalizingEstimator));
             _host.CheckValue(columns, nameof(columns));
-            _columns = columns.Select(x => ColumnBase.Create(x.inputColumn, x.outputColumn, mode)).ToArray();
+            _columns = columns.Select(x => ColumnOptionsBase.Create(x.outputColumnName, x.inputColumnName, mode)).ToArray();
         }
 
-        public Normalizer(IHostEnvironment env, params ColumnBase[] columns)
+        /// <summary>
+        /// Initializes a new instance of <see cref="NormalizingEstimator"/>.
+        /// </summary>
+        /// <param name="env">The private instance of the <see cref="IHostEnvironment"/>.</param>
+        /// <param name="columns">An array of <see cref="ColumnOptionsBase"/> defining the inputs to the Normalizer, and their settings.</param>
+        internal NormalizingEstimator(IHostEnvironment env, params ColumnOptionsBase[] columns)
         {
             Contracts.CheckValue(env, nameof(env));
-            _host = env.Register(nameof(Normalizer));
+            _host = env.Register(nameof(NormalizingEstimator));
             _host.CheckValue(columns, nameof(columns));
 
             _columns = columns.ToArray();
         }
 
-        public NormalizerTransformer Fit(IDataView input)
+        /// <summary>
+        /// Trains and returns a <see cref="NormalizingTransformer"/>.
+        /// </summary>
+        public NormalizingTransformer Fit(IDataView input)
         {
             _host.CheckValue(input, nameof(input));
-            return NormalizerTransformer.Train(_host, input, _columns);
+            return NormalizingTransformer.Train(_host, input, _columns);
         }
 
+        /// <summary>
+        /// Returns the <see cref="SchemaShape"/> of the schema which will be produced by the transformer.
+        /// Used for schema propagation and verification in a pipeline.
+        /// </summary>
         public SchemaShape GetOutputSchema(SchemaShape inputSchema)
         {
             _host.CheckValue(inputSchema, nameof(inputSchema));
-            var result = inputSchema.Columns.ToDictionary(x => x.Name);
+            var result = inputSchema.ToDictionary(x => x.Name);
 
             foreach (var colInfo in _columns)
             {
-                if (!inputSchema.TryFindColumn(colInfo.Input, out var col))
-                    throw _host.ExceptSchemaMismatch(nameof(inputSchema), "input", colInfo.Input);
+                if (!inputSchema.TryFindColumn(colInfo.InputColumnName, out var col))
+                    throw _host.ExceptSchemaMismatch(nameof(inputSchema), "input", colInfo.InputColumnName);
                 if (col.Kind == SchemaShape.Column.VectorKind.VariableVector)
-                    throw _host.ExceptSchemaMismatch(nameof(inputSchema), "input", colInfo.Input, "fixed-size vector or scalar", col.GetTypeString());
+                    throw _host.ExceptSchemaMismatch(nameof(inputSchema), "input", colInfo.InputColumnName, "known-size vector or scalar", col.GetTypeString());
 
-                if (!col.ItemType.Equals(NumberType.R4) && !col.ItemType.Equals(NumberType.R8))
-                    throw _host.ExceptSchemaMismatch(nameof(inputSchema), "input", colInfo.Input, "vector or scalar of R4 or R8", col.GetTypeString());
+                if (!col.ItemType.Equals(NumberDataViewType.Single) && !col.ItemType.Equals(NumberDataViewType.Double))
+                    throw _host.ExceptSchemaMismatch(nameof(inputSchema), "input", colInfo.InputColumnName, "vector or scalar of Single or Double", col.GetTypeString());
 
-                var isNormalizedMeta = new SchemaShape.Column(MetadataUtils.Kinds.IsNormalized, SchemaShape.Column.VectorKind.Scalar,
-                    BoolType.Instance, false);
+                var isNormalizedMeta = new SchemaShape.Column(AnnotationUtils.Kinds.IsNormalized, SchemaShape.Column.VectorKind.Scalar,
+                    BooleanDataViewType.Instance, false);
                 var newMetadataKinds = new List<SchemaShape.Column> { isNormalizedMeta };
-                if (col.Metadata.TryFindColumn(MetadataUtils.Kinds.SlotNames, out var slotMeta))
+                if (col.Annotations.TryFindColumn(AnnotationUtils.Kinds.SlotNames, out var slotMeta))
                     newMetadataKinds.Add(slotMeta);
                 var meta = new SchemaShape(newMetadataKinds);
-                result[colInfo.Output] = new SchemaShape.Column(colInfo.Output, col.Kind, col.ItemType, col.IsKey, meta);
+                result[colInfo.Name] = new SchemaShape.Column(colInfo.Name, col.Kind, col.ItemType, col.IsKey, meta);
             }
 
             return new SchemaShape(result.Values);
         }
     }
 
-    public sealed partial class NormalizerTransformer : OneToOneTransformerBase
+    /// <summary>
+    /// <see cref="ITransformer"/> resulting from fitting an <see cref="NormalizingEstimator"/>.
+    /// </summary>
+    public sealed partial class NormalizingTransformer : OneToOneTransformerBase
     {
-        public const string LoaderSignature = "Normalizer";
+        internal const string LoaderSignature = "Normalizer";
+
+        internal const string LoaderSignatureOld = "NormalizeFunction";
+
+        private static VersionInfo GetOldVersionInfo()
+        {
+            return new VersionInfo(
+                modelSignature: "NORMFUNC",
+                // verWrittenCur: 0x00010001, // Initial
+                // verWrittenCur: 0x00010002, // Changed to OneToOneColumn
+                verWrittenCur: 0x00010003,    // Support generic column functions
+                verReadableCur: 0x00010003,
+                verWeCanReadBack: 0x00010003,
+                loaderSignature: LoaderSignature,
+                loaderSignatureAlt: LoaderSignatureOld,
+                 loaderAssemblyName: typeof(NormalizingTransformer).Assembly.FullName);
+        }
+
         private static VersionInfo GetVersionInfo()
         {
             return new VersionInfo(
@@ -217,25 +361,28 @@ namespace Microsoft.ML.Runtime.Data
                 verReadableCur: 0x00010001,
                 verWeCanReadBack: 0x00010001,
                 loaderSignature: LoaderSignature,
-                loaderAssemblyName: typeof(NormalizerTransformer).Assembly.FullName);
+                loaderAssemblyName: typeof(NormalizingTransformer).Assembly.FullName);
         }
 
-        private class ColumnInfo
+        [BestFriend]
+        internal sealed class ColumnOptions
         {
-            public readonly string Input;
-            public readonly string Output;
-            public readonly ColumnType InputType;
-            public readonly IColumnFunction ColumnFunction;
+            public readonly string Name;
+            public readonly string InputColumnName;
+            public readonly NormalizerModelParametersBase ModelParameters;
+            internal readonly DataViewType InputType;
+            internal readonly IColumnFunction ColumnFunction;
 
-            public ColumnInfo(string input, string output, ColumnType inputType, IColumnFunction columnFunction)
+            internal ColumnOptions(string name, string inputColumnName, DataViewType inputType, IColumnFunction columnFunction)
             {
-                Input = input;
-                Output = output;
+                Name = name;
+                InputColumnName = inputColumnName;
                 InputType = inputType;
                 ColumnFunction = columnFunction;
+                ModelParameters = columnFunction.GetNormalizerModelParams();
             }
 
-            internal static ColumnType LoadType(ModelLoadContext ctx)
+            internal static DataViewType LoadType(ModelLoadContext ctx)
             {
                 Contracts.AssertValue(ctx);
                 // *** Binary format ***
@@ -247,36 +394,38 @@ namespace Microsoft.ML.Runtime.Data
                 Contracts.CheckDecode(vectorSize >= 0);
                 Contracts.CheckDecode(vectorSize > 0 || !isVector);
 
-                DataKind itemKind = (DataKind)ctx.Reader.ReadByte();
-                Contracts.CheckDecode(itemKind == DataKind.R4 || itemKind == DataKind.R8);
+                InternalDataKind itemKind = (InternalDataKind)ctx.Reader.ReadByte();
+                Contracts.CheckDecode(itemKind == InternalDataKind.R4 || itemKind == InternalDataKind.R8);
 
-                var itemType = PrimitiveType.FromKind(itemKind);
-                return isVector ? (ColumnType)(new VectorType(itemType, vectorSize)) : itemType;
+                var itemType = ColumnTypeExtensions.PrimitiveTypeFromKind(itemKind);
+                return isVector ? (DataViewType)(new VectorDataViewType(itemType, vectorSize)) : itemType;
             }
 
-            internal static void SaveType(ModelSaveContext ctx, ColumnType type)
+            internal static void SaveType(ModelSaveContext ctx, DataViewType type)
             {
                 Contracts.AssertValue(ctx);
                 // *** Binary format ***
                 //   - bool: is vector
                 //   - int: vector size
                 //   - byte: ItemKind of input column (only R4 and R8 are valid)
-                ctx.Writer.Write(type.IsVector);
+                VectorDataViewType vectorType = type as VectorDataViewType;
+                ctx.Writer.Write(vectorType != null);
 
-                Contracts.Assert(!type.IsVector || type.VectorSize > 0);
-                ctx.Writer.Write(type.VectorSize);
+                Contracts.Assert(vectorType == null || vectorType.IsKnownSize);
+                ctx.Writer.Write(vectorType?.Size ?? 0);
 
-                var itemKind = type.ItemType.RawKind;
-                Contracts.Assert(itemKind == DataKind.R4 || itemKind == DataKind.R8);
+                DataViewType itemType = vectorType?.ItemType ?? type;
+                itemType.RawType.TryGetDataKind(out InternalDataKind itemKind);
+                Contracts.Assert(itemKind == InternalDataKind.R4 || itemKind == InternalDataKind.R8);
                 ctx.Writer.Write((byte)itemKind);
             }
         }
 
         private sealed class ColumnFunctionAccessor : IReadOnlyList<IColumnFunction>
         {
-            private readonly ColumnInfo[] _infos;
+            private readonly ImmutableArray<ColumnOptions> _infos;
 
-            public ColumnFunctionAccessor(ColumnInfo[] infos)
+            public ColumnFunctionAccessor(ImmutableArray<ColumnOptions> infos)
             {
                 _infos = infos;
             }
@@ -287,38 +436,58 @@ namespace Microsoft.ML.Runtime.Data
             IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
         }
 
-        /// <summary>An accessor of the column functions within <see cref="_columns"/>.</summary>
+        /// <summary>An accessor of the column functions within <see cref="Columns"/>.</summary>
+        [BestFriend]
         internal readonly IReadOnlyList<IColumnFunction> ColumnFunctions;
 
-        private readonly ColumnInfo[] _columns;
+        /// <summary>
+        /// The configuration of the normalizer. The i-th element describes the i-th input-output column pair.
+        /// </summary>
+        [BestFriend]
+        internal readonly ImmutableArray<ColumnOptions> Columns;
 
-        public (string input, string output)[] Columns => ColumnPairs;
-
-        private NormalizerTransformer(IHostEnvironment env, ColumnInfo[] columns)
-            : base(env.Register(nameof(NormalizerTransformer)), columns.Select(x => (x.Input, x.Output)).ToArray())
+        /// <summary>
+        /// The normalization configurations of input columns. It returns the normalization parameters applied to the <paramref name="index"/>-th input column.
+        /// </summary>
+        /// <param name="index">column index.</param>
+        /// <returns>the normalization parameters applied to the <paramref name="index"/>-th input column.</returns>
+        public NormalizerModelParametersBase GetNormalizerModelParameters(int index)
         {
-            _columns = columns;
-            ColumnFunctions = new ColumnFunctionAccessor(_columns);
+            string errMsg = "Not valid. Valid range is from 0 (inclusive) to " + Columns.Length + " (exclusive) but got " + index + ".";
+            Contracts.CheckUserArg(index >= 0 && index < Columns.Length, nameof(index), errMsg);
+
+            return Columns[index].ModelParameters;
         }
 
-        public static NormalizerTransformer Train(IHostEnvironment env, IDataView data, Normalizer.ColumnBase[] columns)
+        private NormalizingTransformer(IHostEnvironment env, ColumnOptions[] columns)
+            : base(env.Register(nameof(NormalizingTransformer)), columns.Select(x => (x.Name, x.InputColumnName)).ToArray())
+        {
+            Columns = ImmutableArray.Create(columns);
+            ColumnFunctions = new ColumnFunctionAccessor(Columns);
+        }
+
+        internal static NormalizingTransformer Train(IHostEnvironment env, IDataView data, NormalizingEstimator.ColumnOptionsBase[] columns)
         {
             Contracts.CheckValue(env, nameof(env));
             env.CheckValue(data, nameof(data));
             env.CheckValue(columns, nameof(columns));
 
-            bool[] activeInput = new bool[data.Schema.ColumnCount];
+            var activeCols = new List<DataViewSchema.Column>();
 
             var srcCols = new int[columns.Length];
-            var srcTypes = new ColumnType[columns.Length];
+            var srcTypes = new DataViewType[columns.Length];
             for (int i = 0; i < columns.Length; i++)
             {
                 var info = columns[i];
-                bool success = data.Schema.TryGetColumnIndex(info.Input, out srcCols[i]);
+                bool success = data.Schema.TryGetColumnIndex(info.InputColumnName, out srcCols[i]);
                 if (!success)
-                    throw env.ExceptSchemaMismatch(nameof(data), "input", info.Input);
-                srcTypes[i] = data.Schema.GetColumnType(srcCols[i]);
-                activeInput[srcCols[i]] = true;
+                    throw env.ExceptSchemaMismatch(nameof(data), "input", info.InputColumnName);
+                srcTypes[i] = data.Schema[srcCols[i]].Type;
+                activeCols.Add(data.Schema[srcCols[i]]);
+
+                var supervisedBinColumn = info as NormalizingEstimator.SupervisedBinningColumOptions;
+                if(supervisedBinColumn != null)
+                    activeCols.Add(data.Schema[supervisedBinColumn.LabelColumnName]);
             }
 
             var functionBuilders = new IColumnFunctionBuilder[columns.Length];
@@ -330,7 +499,7 @@ namespace Microsoft.ML.Runtime.Data
                 long numRows = 0;
 
                 pch.SetHeader(new ProgressHeader("examples"), e => e.SetProgress(0, numRows));
-                using (var cursor = data.GetRowCursor(col => activeInput[col]))
+                using (var cursor = data.GetRowCursor(activeCols))
                 {
                     for (int i = 0; i < columns.Length; i++)
                     {
@@ -343,6 +512,7 @@ namespace Microsoft.ML.Runtime.Data
 
                     while (cursor.MoveNext())
                     {
+                        env.CheckAlive();
                         // If the row has bad values, the good values are still being used for training.
                         // The comparisons in the code below are arranged so that NaNs in the input are not recorded.
                         // REVIEW: Should infinities and/or NaNs be filtered before the normalization? Should we not record infinities for min/max?
@@ -353,7 +523,7 @@ namespace Microsoft.ML.Runtime.Data
                             if (!needMoreData[i])
                                 continue;
                             var info = columns[i];
-                            env.Assert(!srcTypes[i].IsVector || srcTypes[i].IsVector && srcTypes[i].IsKnownSizeVector);
+                            env.Assert(!(srcTypes[i] is VectorDataViewType vectorType) || vectorType.IsKnownSize);
                             env.Assert(functionBuilders[i] != null);
                             any |= needMoreData[i] = functionBuilders[i].ProcessValue();
                         }
@@ -366,18 +536,18 @@ namespace Microsoft.ML.Runtime.Data
 
                 pch.Checkpoint(numRows);
 
-                var result = new ColumnInfo[columns.Length];
+                var result = new ColumnOptions[columns.Length];
                 for (int i = 0; i < columns.Length; i++)
                 {
                     var func = functionBuilders[i].CreateColumnFunction();
-                    result[i] = new ColumnInfo(columns[i].Input, columns[i].Output, srcTypes[i], func);
+                    result[i] = new ColumnOptions(columns[i].Name, columns[i].InputColumnName, srcTypes[i], func);
                 }
 
-                return new NormalizerTransformer(env, result);
+                return new NormalizingTransformer(env, result);
             }
         }
 
-        private NormalizerTransformer(IHost host, ModelLoadContext ctx)
+        private NormalizingTransformer(IHost host, ModelLoadContext ctx)
             : base(host, ctx)
         {
             // *** Binary format ***
@@ -386,30 +556,65 @@ namespace Microsoft.ML.Runtime.Data
             //   - source type
             //   - separate model for column function
 
-            _columns = new ColumnInfo[ColumnPairs.Length];
-            ColumnFunctions = new ColumnFunctionAccessor(_columns);
+            var cols = new ColumnOptions[ColumnPairs.Length];
+            ColumnFunctions = new ColumnFunctionAccessor(Columns);
             for (int iinfo = 0; iinfo < ColumnPairs.Length; iinfo++)
             {
                 var dir = string.Format("Normalizer_{0:000}", iinfo);
-                var typeSrc = ColumnInfo.LoadType(ctx);
+                var typeSrc = ColumnOptions.LoadType(ctx);
                 ctx.LoadModel<IColumnFunction, SignatureLoadColumnFunction>(Host, out var function, dir, Host, typeSrc);
-                _columns[iinfo] = new ColumnInfo(ColumnPairs[iinfo].input, ColumnPairs[iinfo].output, typeSrc, function);
+                cols[iinfo] = new ColumnOptions(ColumnPairs[iinfo].outputColumnName, ColumnPairs[iinfo].inputColumnName, typeSrc, function);
             }
+
+            Columns = ImmutableArray.Create(cols);
         }
 
-        public static NormalizerTransformer Create(IHostEnvironment env, ModelLoadContext ctx)
+        // This constructor for models in old format.
+        private NormalizingTransformer(IHost host, ModelLoadContext ctx, IDataView input)
+          : base(host, ctx)
+        {
+            // *** Binary format ***
+            // <base>
+            // for each added column:
+            //   - separate model for column function
+            var cols = new ColumnOptions[ColumnPairs.Length];
+            ColumnFunctions = new ColumnFunctionAccessor(Columns);
+            for (int iinfo = 0; iinfo < ColumnPairs.Length; iinfo++)
+            {
+                var dir = string.Format("Normalizer_{0:000}", iinfo);
+                var typeSrc = input.Schema[ColumnPairs[iinfo].inputColumnName].Type;
+                ctx.LoadModel<IColumnFunction, SignatureLoadColumnFunction>(Host, out var function, dir, Host, typeSrc);
+                cols[iinfo] = new ColumnOptions(ColumnPairs[iinfo].outputColumnName, ColumnPairs[iinfo].inputColumnName, typeSrc, function);
+            }
+
+            Columns = ImmutableArray.Create(cols);
+        }
+
+        private static NormalizingTransformer Create(IHostEnvironment env, ModelLoadContext ctx)
         {
             Contracts.CheckValue(env, nameof(env));
             env.CheckValue(ctx, nameof(ctx));
             ctx.CheckAtModel(GetVersionInfo());
-            return new NormalizerTransformer(env.Register(nameof(NormalizerTransformer)), ctx);
+            return new NormalizingTransformer(env.Register(nameof(NormalizingTransformer)), ctx);
+        }
+
+        // Factory method for SignatureLoadDataTransform.
+        private static IDataTransform Create(IHostEnvironment env, ModelLoadContext ctx, IDataView input)
+        {
+            Contracts.CheckValue(env, nameof(env));
+            env.CheckValue(ctx, nameof(ctx));
+            ctx.CheckAtModel(GetOldVersionInfo());
+            int cbFloat = ctx.Reader.ReadInt32();
+            env.CheckDecode(cbFloat == sizeof(float));
+            var transformer = new NormalizingTransformer(env.Register(nameof(NormalizingTransformer)), ctx, input);
+            return transformer.MakeDataTransform(input);
         }
 
         // Factory method for SignatureLoadRowMapper.
-        private static IRowMapper Create(IHostEnvironment env, ModelLoadContext ctx, ISchema inputSchema)
+        private static IRowMapper Create(IHostEnvironment env, ModelLoadContext ctx, DataViewSchema inputSchema)
             => Create(env, ctx).MakeRowMapper(inputSchema);
 
-        public override void Save(ModelSaveContext ctx)
+        private protected override void SaveModel(ModelSaveContext ctx)
         {
             Host.CheckValue(ctx, nameof(ctx));
             ctx.CheckAtModel();
@@ -423,98 +628,93 @@ namespace Microsoft.ML.Runtime.Data
             base.SaveColumns(ctx);
 
             // Individual normalization models.
-            for (int iinfo = 0; iinfo < _columns.Length; iinfo++)
+            for (int iinfo = 0; iinfo < Columns.Length; iinfo++)
             {
-                ColumnInfo.SaveType(ctx, _columns[iinfo].InputType);
+                ColumnOptions.SaveType(ctx, Columns[iinfo].InputType);
                 var dir = string.Format("Normalizer_{0:000}", iinfo);
-                ctx.SaveSubModel(dir, _columns[iinfo].ColumnFunction.Save);
+                ctx.SaveSubModel(dir, Columns[iinfo].ColumnFunction.Save);
             }
         }
 
-        protected override void CheckInputColumn(ISchema inputSchema, int col, int srcCol)
+        private protected override void CheckInputColumn(DataViewSchema inputSchema, int col, int srcCol)
         {
-            const string expectedType = "scalar or known-size vector of R4";
+            const string expectedType = "scalar or known-size vector of Single";
 
-            var colType = inputSchema.GetColumnType(srcCol);
-            if (colType.IsVector && !colType.IsKnownSizeVector)
-                throw Host.ExceptSchemaMismatch(nameof(inputSchema), "input", ColumnPairs[col].input, expectedType, "variable-size vector");
-            if (!colType.ItemType.Equals(NumberType.R4) && !colType.ItemType.Equals(NumberType.R8))
-                throw Host.ExceptSchemaMismatch(nameof(inputSchema), "input", ColumnPairs[col].input, expectedType, colType.ToString());
+            var colType = inputSchema[srcCol].Type;
+            VectorDataViewType vectorType = colType as VectorDataViewType;
+            if (vectorType != null && !vectorType.IsKnownSize)
+                throw Host.ExceptSchemaMismatch(nameof(inputSchema), "input", ColumnPairs[col].inputColumnName, expectedType, "variable-size vector");
+            DataViewType itemType = vectorType?.ItemType ?? colType;
+            if (!itemType.Equals(NumberDataViewType.Single) && !itemType.Equals(NumberDataViewType.Double))
+                throw Host.ExceptSchemaMismatch(nameof(inputSchema), "input", ColumnPairs[col].inputColumnName, expectedType, colType.ToString());
         }
 
         // Temporary: enables SignatureDataTransform factory methods.
-        public new IDataTransform MakeDataTransform(IDataView input)
+        internal new IDataTransform MakeDataTransform(IDataView input)
             => base.MakeDataTransform(input);
 
-        protected override IRowMapper MakeRowMapper(ISchema schema)
-            => new Mapper(this, schema);
+        private protected override IRowMapper MakeRowMapper(DataViewSchema schema) => new Mapper(this, schema);
 
-        private sealed class Mapper : MapperBase, ISaveAsOnnx, ISaveAsPfa
+        private sealed class Mapper : OneToOneMapperBase, ISaveAsOnnx, ISaveAsPfa
         {
-            private NormalizerTransformer _parent;
+            private NormalizingTransformer _parent;
 
-            public bool CanSaveOnnx => true;
+            public bool CanSaveOnnx(OnnxContext ctx) => true;
             public bool CanSavePfa => true;
 
-            public Mapper(NormalizerTransformer parent, ISchema schema)
+            public Mapper(NormalizingTransformer parent, DataViewSchema schema)
                 : base(parent.Host.Register(nameof(Mapper)), parent, schema)
             {
                 _parent = parent;
             }
 
-            public override RowMapperColumnInfo[] GetOutputColumns()
+            protected override DataViewSchema.DetachedColumn[] GetOutputColumnsCore()
             {
-                var result = new RowMapperColumnInfo[_parent._columns.Length];
+                var result = new DataViewSchema.DetachedColumn[_parent.Columns.Length];
                 for (int i = 0; i < _parent.Columns.Length; i++)
-                    result[i] = new RowMapperColumnInfo(_parent._columns[i].Output, _parent._columns[i].InputType, MakeMetadata(i));
+                    result[i] = new DataViewSchema.DetachedColumn(_parent.Columns[i].Name, _parent.Columns[i].InputType, MakeMetadata(i));
                 return result;
             }
 
-            private ColumnMetadataInfo MakeMetadata(int iinfo)
+            private DataViewSchema.Annotations MakeMetadata(int iinfo)
             {
-                var colInfo = _parent._columns[iinfo];
-                var result = new ColumnMetadataInfo(colInfo.Output);
-                result.Add(MetadataUtils.Kinds.IsNormalized, new MetadataInfo<bool>(BoolType.Instance, IsNormalizedGetter));
-                if (InputSchema.HasSlotNames(ColMapNewToOld[iinfo], colInfo.InputType.VectorSize))
-                {
-                    MetadataUtils.MetadataGetter<VBuffer<ReadOnlyMemory<char>>> getter = (int col, ref VBuffer<ReadOnlyMemory<char>> slotNames) =>
-                        InputSchema.GetMetadata(MetadataUtils.Kinds.SlotNames, ColMapNewToOld[iinfo], ref slotNames);
-                    var metaType = InputSchema.GetMetadataTypeOrNull(MetadataUtils.Kinds.SlotNames, ColMapNewToOld[iinfo]);
-                    Contracts.AssertValue(metaType);
-                    result.Add(MetadataUtils.Kinds.SlotNames, new MetadataInfo<VBuffer<ReadOnlyMemory<char>>>(metaType, getter));
-                }
-                return result;
+                var colInfo = _parent.Columns[iinfo];
+                var builder = new DataViewSchema.Annotations.Builder();
+
+                builder.Add(AnnotationUtils.Kinds.IsNormalized, BooleanDataViewType.Instance, (ValueGetter<bool>)IsNormalizedGetter);
+                builder.Add(InputSchema[ColMapNewToOld[iinfo]].Annotations, name => name == AnnotationUtils.Kinds.SlotNames);
+                return builder.ToAnnotations();
             }
 
-            private void IsNormalizedGetter(int col, ref bool dst)
+            private void IsNormalizedGetter(ref bool dst)
             {
                 dst = true;
             }
 
-            protected override Delegate MakeGetter(IRow input, int iinfo, out Action disposer)
+            protected override Delegate MakeGetter(DataViewRow input, int iinfo, Func<int, bool> activeOutput, out Action disposer)
             {
                 disposer = null;
-                return _parent._columns[iinfo].ColumnFunction.GetGetter(input, ColMapNewToOld[iinfo]);
+                return _parent.Columns[iinfo].ColumnFunction.GetGetter(input, ColMapNewToOld[iinfo]);
             }
 
             public void SaveAsOnnx(OnnxContext ctx)
             {
                 Host.CheckValue(ctx, nameof(ctx));
 
-                for (int iinfo = 0; iinfo < _parent._columns.Length; ++iinfo)
+                for (int iinfo = 0; iinfo < _parent.Columns.Length; ++iinfo)
                 {
-                    var info = _parent._columns[iinfo];
-                    string sourceColumnName = info.Input;
-                    if (!ctx.ContainsColumn(sourceColumnName))
+                    var info = _parent.Columns[iinfo];
+                    string inputColumnName = info.InputColumnName;
+                    if (!ctx.ContainsColumn(inputColumnName))
                     {
-                        ctx.RemoveColumn(info.Output, false);
+                        ctx.RemoveColumn(info.Name, false);
                         continue;
                     }
 
-                    if (!SaveAsOnnxCore(ctx, iinfo, info, ctx.GetVariableName(sourceColumnName),
-                        ctx.AddIntermediateVariable(info.InputType, info.Output)))
+                    if (!SaveAsOnnxCore(ctx, iinfo, info, ctx.GetVariableName(inputColumnName),
+                        ctx.AddIntermediateVariable(info.InputType, info.Name)))
                     {
-                        ctx.RemoveColumn(info.Output, true);
+                        ctx.RemoveColumn(info.Name, true);
                     }
                 }
             }
@@ -526,53 +726,54 @@ namespace Microsoft.ML.Runtime.Data
                 var toHide = new List<string>();
                 var toDeclare = new List<KeyValuePair<string, JToken>>();
 
-                for (int iinfo = 0; iinfo < _parent._columns.Length; ++iinfo)
+                for (int iinfo = 0; iinfo < _parent.Columns.Length; ++iinfo)
                 {
-                    var info = _parent._columns[iinfo];
-                    var srcName = info.Input;
+                    var info = _parent.Columns[iinfo];
+                    var srcName = info.InputColumnName;
                     string srcToken = ctx.TokenOrNullForName(srcName);
                     if (srcToken == null)
                     {
-                        toHide.Add(info.Output);
+                        toHide.Add(info.Name);
                         continue;
                     }
                     var result = SaveAsPfaCore(ctx, iinfo, info, srcToken);
                     if (result == null)
                     {
-                        toHide.Add(info.Output);
+                        toHide.Add(info.Name);
                         continue;
                     }
-                    toDeclare.Add(new KeyValuePair<string, JToken>(info.Output, result));
+                    toDeclare.Add(new KeyValuePair<string, JToken>(info.Name, result));
                 }
                 ctx.Hide(toHide.ToArray());
                 ctx.DeclareVar(toDeclare.ToArray());
             }
 
-            private JToken SaveAsPfaCore(BoundPfaContext ctx, int iinfo, ColumnInfo info, JToken srcToken)
+            private JToken SaveAsPfaCore(BoundPfaContext ctx, int iinfo, ColumnOptions info, JToken srcToken)
             {
                 Contracts.AssertValue(ctx);
-                Contracts.Assert(0 <= iinfo && iinfo < _parent._columns.Length);
-                Contracts.Assert(_parent._columns[iinfo] == info);
+                Contracts.Assert(0 <= iinfo && iinfo < _parent.Columns.Length);
+                Contracts.Assert(_parent.Columns[iinfo] == info);
                 Contracts.AssertValue(srcToken);
                 Contracts.Assert(CanSavePfa);
                 return info.ColumnFunction.PfaInfo(ctx, srcToken);
             }
 
-            private bool SaveAsOnnxCore(OnnxContext ctx, int iinfo, ColumnInfo info, string srcVariableName, string dstVariableName)
+            private bool SaveAsOnnxCore(OnnxContext ctx, int iinfo, ColumnOptions info, string srcVariableName, string dstVariableName)
             {
                 Contracts.AssertValue(ctx);
-                Contracts.Assert(0 <= iinfo && iinfo < _parent._columns.Length);
-                Contracts.Assert(_parent._columns[iinfo] == info);
-                Contracts.Assert(CanSaveOnnx);
+                Contracts.Assert(0 <= iinfo && iinfo < _parent.Columns.Length);
+                Contracts.Assert(_parent.Columns[iinfo] == info);
+                Contracts.Assert(CanSaveOnnx(ctx));
 
-                if (info.InputType.ValueCount == 0)
+                int valueCount = info.InputType.GetValueCount();
+                if (valueCount == 0)
                     return false;
 
-                if (info.ColumnFunction.CanSaveOnnx)
+                if (info.ColumnFunction.CanSaveOnnx(ctx))
                 {
                     string opType = "Scaler";
                     var node = ctx.CreateNode(opType, srcVariableName, dstVariableName, ctx.GetNodeName(opType));
-                    info.ColumnFunction.OnnxInfo(ctx, node, info.InputType.ValueCount);
+                    info.ColumnFunction.OnnxInfo(ctx, node, valueCount);
                     return true;
                 }
 
@@ -581,61 +782,123 @@ namespace Microsoft.ML.Runtime.Data
         }
 
         /// <summary>
-        /// An interface implemented by items of <see cref="ColumnFunctions"/> corresponding to the
-        /// <see cref="NormalizeTransform.AffineColumnFunction"/> items.
+        /// Base class for all the data normalizer models like <see cref="AffineNormalizerModelParameters{TData}"/>,
+        /// <see cref="BinNormalizerModelParameters{TData}"/>, <see cref="CdfNormalizerModelParameters{TData}"/>.
         /// </summary>
-        internal interface IAffineData<TData>
+        public abstract class NormalizerModelParametersBase
+        {
+            private protected NormalizerModelParametersBase() { }
+        }
+
+        /// <summary>
+        /// The model parameters generated by affine normalization transformations.
+        /// </summary>
+        /// <example>
+        /// <format type="text/markdown">
+        /// <![CDATA[
+        /// [!code-csharp[Normalize](~/../docs/samples/docs/samples/Microsoft.ML.Samples/Dynamic/Transforms/NormalizeLogMeanVariance.cs)]
+        /// ]]>
+        /// </format>
+        /// </example>
+        public sealed class AffineNormalizerModelParameters<TData> : NormalizerModelParametersBase
         {
             /// <summary>
             /// The scales. In the scalar case, this is a single value. In the vector case this is of length equal
             /// to the number of slots. Function is <c>(input - offset) * scale</c>.
             /// </summary>
-            TData Scale { get; }
+            public TData Scale { get; }
 
             /// <summary>
             /// The offsets. In the scalar case, this is a single value. In the vector case this is of length equal
             /// to the number of slots, or of length zero if all the offsets are zero.
             /// </summary>
-            TData Offset { get; }
+            public TData Offset { get; }
+
+            /// <summary>
+            /// Initializes a new instance of <see cref="AffineNormalizerModelParameters{TData}"/>
+            /// </summary>
+            internal AffineNormalizerModelParameters(TData scale, TData offset)
+            {
+                Scale = scale;
+                Offset = offset;
+            }
         }
 
         /// <summary>
-        /// An interface implemented by items of <see cref="ColumnFunctions"/> corresponding to the
-        /// <see cref="NormalizeTransform.CdfColumnFunction"/> items. The function is the value of the
-        /// cumulative density function of the normal distribution parameterized with mean <see cref="Mean"/>
-        /// and standard deviation <see cref="Stddev"/>.
+        /// The model parameters generated by cumulative distribution normalization transformations.
+        /// The cumulative density function is parameterized by <see cref="CdfNormalizerModelParameters{TData}.Mean"/> and
+        /// the <see cref="CdfNormalizerModelParameters{TData}.StandardDeviation"/> as observed during fitting.
         /// </summary>
-        internal interface ICdfData<TData>
+        /// <example>
+        /// <format type="text/markdown">
+        /// <![CDATA[
+        /// [!code-csharp[Normalize](~/../docs/samples/docs/samples/Microsoft.ML.Samples/Dynamic/Transforms/NormalizeLogMeanVariance.cs)]
+        /// ]]>
+        /// </format>
+        /// </example>
+        public sealed class CdfNormalizerModelParameters<TData> : NormalizerModelParametersBase
         {
             /// <summary>
             /// The mean(s). In the scalar case, this is a single value. In the vector case this is of length equal
             /// to the number of slots.
             /// </summary>
-            TData Mean { get; }
+            public TData Mean { get; }
 
             /// <summary>
             /// The standard deviation(s). In the scalar case, this is a single value. In the vector case this is of
             /// length equal to the number of slots.
             /// </summary>
-            TData Stddev { get; }
+            public TData StandardDeviation { get; }
 
             /// <summary>
             /// Whether the we ought to apply a logarithm to the input first.
             /// </summary>
-            bool UseLog { get; }
+            public bool UseLog { get; }
+
+            /// <summary>
+            /// Initializes a new instance of <see cref="CdfNormalizerModelParameters{TData}"/>
+            /// </summary>
+            internal CdfNormalizerModelParameters(TData mean, TData stddev, bool useLog)
+            {
+                Mean = mean;
+                StandardDeviation = stddev;
+                UseLog = useLog;
+            }
         }
 
         /// <summary>
-        /// An interface implemented by items of <see cref="ColumnFunctions"/> corresponding to the
-        /// <see cref="NormalizeTransform.BinColumnFunction"/> items.
-        /// </summary>
-        internal interface IBinData<TData>
+        /// The model parameters generated by buckettizing the data into bins with monotonically
+        /// increasing <see cref="BinNormalizerModelParameters{TData}.UpperBounds"/>.
+        /// The <see cref="BinNormalizerModelParameters{TData}.Density"/> value is constant from bin to bin, for most cases.
+        /// /// </summary>
+        public sealed class BinNormalizerModelParameters<TData> : NormalizerModelParametersBase
         {
             /// <summary>
             /// The standard deviation(s). In the scalar case, these are the bin upper bounds for that single value.
             /// In the vector case it is a jagged array of the bin upper bounds for all slots.
             /// </summary>
-            ImmutableArray<TData> UpperBounds { get; }
+            public ImmutableArray<TData> UpperBounds { get; }
+
+            /// <summary>
+            /// The frequency of the datapoints per each bin.
+            /// </summary>
+            public TData Density { get; }
+
+            /// <summary>
+            /// If normalization is performed with <see cref="NormalizeTransform.ControlZeroArgumentsBase.EnsureZeroUntouched"/> set to <value>true</value>,
+            /// the offset indicates the displacement of zero, if any.
+            /// </summary>
+            public TData Offset { get; }
+
+            /// <summary>
+            /// Initializes a new instance of <see cref="BinNormalizerModelParameters{TData}"/>
+            /// </summary>
+            internal BinNormalizerModelParameters(ImmutableArray<TData> upperBounds, TData density, TData offset)
+            {
+                UpperBounds = upperBounds;
+                Density = density;
+                Offset = offset;
+            }
         }
     }
 }

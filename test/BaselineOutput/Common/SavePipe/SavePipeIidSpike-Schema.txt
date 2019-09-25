@@ -1,0 +1,54 @@
+---- BoundLoader ----
+1 columns:
+  Features: Single
+---- SequentialDataTransform ----
+2 columns:
+  Features: Single
+  Anomaly: Vector<Double, 3>
+    Metadata 'SlotNames': Vector<String, 3>: Length=3, Count=3
+      [0] 'Alert', [1] 'Raw Score', [2] 'P-Value Score'
+---- RowToRowMapperTransform ----
+3 columns:
+  Features: Single
+  Anomaly: Vector<Double, 3>
+    Metadata 'SlotNames': Vector<String, 3>: Length=3, Count=3
+      [0] 'Alert', [1] 'Raw Score', [2] 'P-Value Score'
+  fAnomaly: Vector<Single, 3>
+    Metadata 'SlotNames': Vector<String, 3>: Length=3, Count=3
+      [0] 'Alert', [1] 'Raw Score', [2] 'P-Value Score'
+---- SequentialDataTransform ----
+4 columns:
+  Features: Single
+  Anomaly: Vector<Double, 3>
+    Metadata 'SlotNames': Vector<String, 3>: Length=3, Count=3
+      [0] 'Alert', [1] 'Raw Score', [2] 'P-Value Score'
+  fAnomaly: Vector<Single, 3>
+    Metadata 'SlotNames': Vector<String, 3>: Length=3, Count=3
+      [0] 'Alert', [1] 'Raw Score', [2] 'P-Value Score'
+  Anomaly2: Vector<Double, 3>
+    Metadata 'SlotNames': Vector<String, 3>: Length=3, Count=3
+      [0] 'Alert', [1] 'Raw Score', [2] 'P-Value Score'
+---- RowToRowMapperTransform ----
+5 columns:
+  Features: Single
+  Anomaly: Vector<Double, 3>
+    Metadata 'SlotNames': Vector<String, 3>: Length=3, Count=3
+      [0] 'Alert', [1] 'Raw Score', [2] 'P-Value Score'
+  fAnomaly: Vector<Single, 3>
+    Metadata 'SlotNames': Vector<String, 3>: Length=3, Count=3
+      [0] 'Alert', [1] 'Raw Score', [2] 'P-Value Score'
+  Anomaly2: Vector<Double, 3>
+    Metadata 'SlotNames': Vector<String, 3>: Length=3, Count=3
+      [0] 'Alert', [1] 'Raw Score', [2] 'P-Value Score'
+  fAnomaly2: Vector<Single, 3>
+    Metadata 'SlotNames': Vector<String, 3>: Length=3, Count=3
+      [0] 'Alert', [1] 'Raw Score', [2] 'P-Value Score'
+---- SelectColumnsDataTransform ----
+3 columns:
+  Features: Single
+  fAnomaly: Vector<Single, 3>
+    Metadata 'SlotNames': Vector<String, 3>: Length=3, Count=3
+      [0] 'Alert', [1] 'Raw Score', [2] 'P-Value Score'
+  fAnomaly2: Vector<Single, 3>
+    Metadata 'SlotNames': Vector<String, 3>: Length=3, Count=3
+      [0] 'Alert', [1] 'Raw Score', [2] 'P-Value Score'

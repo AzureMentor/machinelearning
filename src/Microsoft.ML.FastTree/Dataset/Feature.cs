@@ -3,14 +3,15 @@
 // See the LICENSE file in the project root for more information.
 
 using System.Linq;
+using Microsoft.ML.Runtime;
 
-namespace Microsoft.ML.Runtime.FastTree.Internal
+namespace Microsoft.ML.Trainers.FastTree
 {
 
     /// <summary>
     /// Represents a binned feature
     /// </summary>
-    public abstract class Feature
+    internal abstract class Feature
     {
         private IntArray _bins;
 
@@ -33,7 +34,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
 #endif
 
         public bool IsTrivialFeature { get; private set; }
-        public MD5Hash MD5Hash { get; private set; }
+
         public IntArrayType BinsType { get; private set; }
 #if !NO_STORE
         public FileObjectStore<IntArrayFormatter> BinsCache { get; set; }
@@ -45,12 +46,6 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
             BinsCache = FileObjectStore<IntArrayFormatter>.GetDefaultInstance();
 #endif
             IsTrivialFeature = bins.BitsPerItem == IntArrayBits.Bits0;
-
-            if (!IsTrivialFeature && bins.Length > 0)
-            {
-                MD5Hash = bins.MD5Hash;
-            }
-
             BinsType = bins.Type;
         }
 
@@ -84,14 +79,14 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
 
                 switch (type)
                 {
-                case FeatureType.Raw:
-                    TsvFeature tf = new TsvFeature(buffer, ref position);
+                    case FeatureType.Raw:
+                        TsvFeature tf = new TsvFeature(buffer, ref position);
 #if !NO_STORE
                     tf.BinsCache = FileObjectStore<IntArrayFormatter>.GetDefaultInstance();
 #endif
-                    return tf;
-                default:
-                    throw Contracts.Except("Impossible!");
+                        return tf;
+                    default:
+                        throw Contracts.Except("Impossible!");
                 }
             }
         }
@@ -190,7 +185,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
         }
     }
 
-    public sealed class TsvFeature : Feature
+    internal sealed class TsvFeature : Feature
     {
         private readonly uint[] _valueMap;
         private string _name;

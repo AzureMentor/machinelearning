@@ -6,8 +6,9 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using Microsoft.ML.Runtime;
 
-namespace Microsoft.ML.Runtime.FastTree.Internal
+namespace Microsoft.ML.Trainers.FastTree
 {
     internal static class ThreadTaskManager
     {
@@ -87,7 +88,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
     /// <summary>
     /// Interface for a decomposable task that runs on many threads
     /// </summary>
-    public interface IThreadTask
+    internal interface IThreadTask
     {
         void RunTask();
     }

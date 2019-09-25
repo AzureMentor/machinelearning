@@ -2,46 +2,68 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
+using System;
+using System.Threading.Tasks;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.Testing;
 using Microsoft.ML.CodeAnalyzer.Tests.Helpers;
 using Xunit;
+using VerifyCS = Microsoft.ML.CodeAnalyzer.Tests.Helpers.CSharpCodeFixVerifier<
+    Microsoft.ML.InternalCodeAnalyzer.ContractsCheckAnalyzer,
+    Microsoft.ML.InternalCodeAnalyzer.ContractsCheckNameofFixProvider>;
 
 namespace Microsoft.ML.InternalCodeAnalyzer.Tests
 {
-    public sealed class ContractsCheckTest : DiagnosticVerifier<ContractsCheckAnalyzer>
+    public sealed class ContractsCheckTest
     {
-        private static string _contractsSource;
-        internal static string Source => TestUtils.EnsureSourceLoaded(ref _contractsSource, "ContractsCheckResource.cs");
+        private readonly Lazy<string> Source = TestUtils.LazySource("ContractsCheckResource.cs");
+        private readonly Lazy<string> SourceContracts = TestUtils.LazySource("Contracts.cs");
+        private readonly Lazy<string> SourceFriend = TestUtils.LazySource("BestFriendAttribute.cs");
 
         [Fact]
-        public void ContractsCheck()
+        public async Task ContractsCheck()
         {
-            var analyzer = GetCSharpDiagnosticAnalyzer();
-            var diagName = analyzer.SupportedDiagnostics[0];
-            var diagExceptExp = analyzer.SupportedDiagnostics[1];
-            var diagMsg = analyzer.SupportedDiagnostics[2];
-            var diagDecode = analyzer.SupportedDiagnostics[3];
-
-            const int basis = 10;
+            const int basis = 11;
             var expected = new DiagnosticResult[] {
-                diagName.CreateDiagnosticResult(basis + 8, 46, "CheckParam", "paramName", "\"p\""),
-                diagName.CreateDiagnosticResult(basis + 9, 46, "CheckParam", "paramName", "nameof(p) + nameof(p)"),
-                diagName.CreateDiagnosticResult(basis + 11, 28, "CheckValue", "paramName", "\"p\""),
-                diagName.CreateDiagnosticResult(basis + 13, 39, "CheckUserArg", "name", "\"foo\""),
-                diagExceptExp.CreateDiagnosticResult(basis + 15, 13, "Except"),
-                diagExceptExp.CreateDiagnosticResult(basis + 16, 13, "ExceptParam"),
-                diagName.CreateDiagnosticResult(basis + 22, 39, "ExceptParam", "paramName", "\"env\""),
-                diagMsg.CreateDiagnosticResult(basis + 24, 29, "Check", "$\"Hello {foo} is cool\""),
-                diagMsg.CreateDiagnosticResult(basis + 28, 29, "Check", "string.Format(\"Hello {0} is cool\", foo)"),
-                diagMsg.CreateDiagnosticResult(basis + 32, 35, "Check", "\"Less fine: \" + env.GetType().Name"),
-                diagName.CreateDiagnosticResult(basis + 34, 17, "CheckUserArg", "name", "\"p\""),
-                diagDecode.CreateDiagnosticResult(basis + 39, 41, "CheckDecode", "\"This message is suspicious\""),
+                new DiagnosticResult("CS0051", DiagnosticSeverity.Error).WithLocation(15, 16).WithMessage("Inconsistent accessibility: parameter type 'IHostEnvironment' is less accessible than method 'TypeName.TypeName(IHostEnvironment, float, int)'"),
+                VerifyCS.Diagnostic(ContractsCheckAnalyzer.NameofDiagnostic.Rule).WithLocation(basis + 8, 46).WithArguments("CheckParam", "paramName", "\"p\""),
+                VerifyCS.Diagnostic(ContractsCheckAnalyzer.NameofDiagnostic.Rule).WithLocation(basis + 9, 46).WithArguments("CheckParam", "paramName", "nameof(p) + nameof(p)"),
+                VerifyCS.Diagnostic(ContractsCheckAnalyzer.NameofDiagnostic.Rule).WithLocation(basis + 11, 28).WithArguments("CheckValue", "paramName", "\"p\""),
+                VerifyCS.Diagnostic(ContractsCheckAnalyzer.NameofDiagnostic.Rule).WithLocation(basis + 13, 39).WithArguments("CheckUserArg", "name", "\"foo\""),
+                VerifyCS.Diagnostic(ContractsCheckAnalyzer.ExceptionDiagnostic.Rule).WithLocation(basis + 15, 13).WithArguments("Except"),
+                VerifyCS.Diagnostic(ContractsCheckAnalyzer.ExceptionDiagnostic.Rule).WithLocation(basis + 16, 13).WithArguments("ExceptParam"),
+                VerifyCS.Diagnostic(ContractsCheckAnalyzer.NameofDiagnostic.Rule).WithLocation(basis + 22, 39).WithArguments("ExceptParam", "paramName", "\"env\""),
+                VerifyCS.Diagnostic(ContractsCheckAnalyzer.SimpleMessageDiagnostic.Rule).WithLocation(basis + 24, 29).WithArguments("Check", "$\"Hello {foo} is cool\""),
+                VerifyCS.Diagnostic(ContractsCheckAnalyzer.SimpleMessageDiagnostic.Rule).WithLocation(basis + 28, 29).WithArguments("Check", "string.Format(\"Hello {0} is cool\", foo)"),
+                VerifyCS.Diagnostic(ContractsCheckAnalyzer.SimpleMessageDiagnostic.Rule).WithLocation(basis + 32, 35).WithArguments("Check", "\"Less fine: \" + env.GetType().Name"),
+                VerifyCS.Diagnostic(ContractsCheckAnalyzer.NameofDiagnostic.Rule).WithLocation(basis + 34, 17).WithArguments("CheckUserArg", "name", "\"p\""),
+                VerifyCS.Diagnostic(ContractsCheckAnalyzer.DecodeMessageWithLoadContextDiagnostic.Rule).WithLocation(basis + 39, 41).WithArguments("CheckDecode", "\"This message is suspicious\""),
+                new DiagnosticResult("CS0122", DiagnosticSeverity.Error).WithLocation("Test1.cs", 752, 24).WithMessage("'ICancelable' is inaccessible due to its protection level"),
+                new DiagnosticResult("CS0122", DiagnosticSeverity.Error).WithLocation("Test1.cs", 752, 67).WithMessage("'ICancelable.IsCanceled' is inaccessible due to its protection level"),
             };
 
-            VerifyCSharpDiagnostic(Source, expected);
+            var test = new VerifyCS.Test
+            {
+                LanguageVersion = LanguageVersion.CSharp7_2,
+                TestState =
+                {
+                    Sources =
+                    {
+                        Source.Value,
+                        SourceContracts.Value,
+                        SourceFriend.Value,
+                    },
+                    AdditionalReferences = { AdditionalMetadataReferences.RefFromType<Memory<int>>() },
+                }
+            };
+
+            test.ExpectedDiagnostics.AddRange(expected);
+            await test.RunAsync();
         }
 
         [Fact]
-        public void ContractsCheckDecoy()
+        public async Task ContractsCheckDecoy()
         {
             // Run a test with a "decoy" Contacts that has the same signature on the method,
             // except the namespace is distinct so it is a different type. We should not find
@@ -62,22 +84,78 @@ namespace TestNamespace
             => Contracts.ExceptParam(""myAwesomeParameter"", ""What a great thing"");
     }
 }";
-            VerifyCSharpDiagnostic(decoySource, new DiagnosticResult[0]);
+            await VerifyCS.VerifyAnalyzerAsync(decoySource);
         }
-    }
 
-    public sealed class ContractsCheckFixTest : CodeFixVerifier<ContractsCheckAnalyzer, ContractsCheckNameofFixProvider>
-    {
-        private static string _preFix;
-        private static string _postFix;
+        private readonly Lazy<string> SourcePreFix = TestUtils.LazySource("ContractsCheckBeforeFix.cs");
+        private readonly Lazy<string> SourcePostFix = TestUtils.LazySource("ContractsCheckAfterFix.cs");
+
+        private readonly Lazy<string> SourceArgAttr = TestUtils.LazySource("ArgumentAttribute.cs");
+        private readonly Lazy<string> SourceArgType = TestUtils.LazySource("ArgumentType.cs");
+        private readonly Lazy<string> SourceBestAttr = TestUtils.LazySource("BestFriendAttribute.cs");
+        private readonly Lazy<string> SourceDefArgAttr = TestUtils.LazySource("DefaultArgumentAttribute.cs");
 
         [Fact]
-        public void ContractsCheckFix()
+        public async Task ContractsCheckFix()
         {
-            string test = TestUtils.EnsureSourceLoaded(ref _preFix, "ContractsCheckBeforeFix.cs");
-            string expected = TestUtils.EnsureSourceLoaded(ref _postFix, "ContractsCheckAfterFix.cs");
+            var test = new VerifyCS.Test
+            {
+                LanguageVersion = LanguageVersion.CSharp7_2,
+                TestState =
+                {
+                    Sources =
+                    {
+                        SourcePreFix.Value,
+                        SourceContracts.Value,
+                        SourceArgAttr.Value,
+                        SourceArgType.Value,
+                        SourceBestAttr.Value,
+                        SourceDefArgAttr.Value,
+                    },
+                    ExpectedDiagnostics =
+                    {
+                        VerifyCS.Diagnostic(ContractsCheckAnalyzer.ExceptionDiagnostic.Rule).WithLocation(9, 43).WithArguments("ExceptParam"),
+                        VerifyCS.Diagnostic(ContractsCheckAnalyzer.NameofDiagnostic.Rule).WithLocation(9, 65).WithArguments("ExceptParam", "paramName", "\"yuck\""),
+                        VerifyCS.Diagnostic(ContractsCheckAnalyzer.NameofDiagnostic.Rule).WithLocation(13, 39).WithArguments("CheckValue", "paramName", "\"str\""),
+                        VerifyCS.Diagnostic(ContractsCheckAnalyzer.NameofDiagnostic.Rule).WithLocation(14, 66).WithArguments("CheckUserArg", "name", "\"Foo\""),
+                        VerifyCS.Diagnostic(ContractsCheckAnalyzer.NameofDiagnostic.Rule).WithLocation(15, 57).WithArguments("CheckUserArg", "name", "\"Bar\""),
+                        VerifyCS.Diagnostic(ContractsCheckAnalyzer.NameofDiagnostic.Rule).WithLocation(16, 57).WithArguments("CheckUserArg", "name", "\"A\""),
+                        VerifyCS.Diagnostic(ContractsCheckAnalyzer.NameofDiagnostic.Rule).WithLocation(17, 52).WithArguments("ExceptParam", "paramName", "\"Bar\""),
+                        VerifyCS.Diagnostic(ContractsCheckAnalyzer.NameofDiagnostic.Rule).WithLocation(20, 17).WithArguments("CheckParam", "paramName", "\"isFive\""),
+                        VerifyCS.Diagnostic(ContractsCheckAnalyzer.NameofDiagnostic.Rule).WithLocation(21, 49).WithArguments("CheckValue", "paramName", "\"Y\""),
+                        VerifyCS.Diagnostic(ContractsCheckAnalyzer.NameofDiagnostic.Rule).WithLocation(22, 52).WithArguments("ExceptParam", "paramName", "\"tom\""),
+                        VerifyCS.Diagnostic(ContractsCheckAnalyzer.NameofDiagnostic.Rule).WithLocation(23, 39).WithArguments("CheckValue", "paramName", "\"noMatch\""),
+                        VerifyCS.Diagnostic(ContractsCheckAnalyzer.NameofDiagnostic.Rule).WithLocation(24, 53).WithArguments("CheckUserArg", "name", "\"chumble\""),
+                        VerifyCS.Diagnostic(ContractsCheckAnalyzer.NameofDiagnostic.Rule).WithLocation(25, 53).WithArguments("CheckUserArg", "name", "\"sp\""),
+                        new DiagnosticResult("CS0122", DiagnosticSeverity.Error).WithLocation("Test1.cs", 752, 24).WithMessage("'ICancelable' is inaccessible due to its protection level"),
+                        new DiagnosticResult("CS0122", DiagnosticSeverity.Error).WithLocation("Test1.cs", 752, 67).WithMessage("'ICancelable.IsCanceled' is inaccessible due to its protection level"),
+                        new DiagnosticResult("CS1503", DiagnosticSeverity.Error).WithLocation("Test1.cs", 753, 91).WithMessage("Argument 2: cannot convert from 'Microsoft.ML.Runtime.IHostEnvironment' to 'Microsoft.ML.Runtime.IExceptionContext'"),
+                    },
+                    AdditionalReferences = { AdditionalMetadataReferences.RefFromType<Memory<int>>() },
+                },
+                FixedState =
+                {
+                    Sources =
+                    {
+                        SourcePostFix.Value,
+                        SourceContracts.Value,
+                        SourceArgAttr.Value,
+                        SourceArgType.Value,
+                        SourceBestAttr.Value,
+                        SourceDefArgAttr.Value,
+                    },
+                    ExpectedDiagnostics =
+                    {
+                        VerifyCS.Diagnostic(ContractsCheckAnalyzer.ExceptionDiagnostic.Rule).WithLocation(9, 43).WithArguments("ExceptParam"),
+                        VerifyCS.Diagnostic(ContractsCheckAnalyzer.NameofDiagnostic.Rule).WithLocation(23, 39).WithArguments("CheckValue", "paramName", "\"noMatch\""),
+                        new DiagnosticResult("CS0122", DiagnosticSeverity.Error).WithLocation("Test1.cs", 752, 24).WithMessage("'ICancelable' is inaccessible due to its protection level"),
+                        new DiagnosticResult("CS0122", DiagnosticSeverity.Error).WithLocation("Test1.cs", 752, 67).WithMessage("'ICancelable.IsCanceled' is inaccessible due to its protection level"),
+                        new DiagnosticResult("CS1503", DiagnosticSeverity.Error).WithLocation("Test1.cs", 753, 91).WithMessage("Argument 2: cannot convert from 'Microsoft.ML.Runtime.IHostEnvironment' to 'Microsoft.ML.Runtime.IExceptionContext'"),
+                    },
+                },
+            };
 
-            VerifyCSharpFix(test, expected);
+            await test.RunAsync();
         }
     }
 }

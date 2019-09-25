@@ -2,13 +2,12 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Float = System.Single;
-
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using Microsoft.ML.Internal.CpuMath.Core;
 
-namespace Microsoft.ML.Runtime.Internal.CpuMath
+namespace Microsoft.ML.Internal.CpuMath
 {
     using Conditional = System.Diagnostics.ConditionalAttribute;
 
@@ -18,7 +17,8 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
     /// the AlignedArray with a logical size, which does not include padding, while the AlignedArray
     /// size does include padding.
     /// </summary>
-    public sealed class CpuAlignedVector : ICpuVector
+    [BestFriend]
+    internal sealed class CpuAlignedVector : ICpuVector
     {
         private readonly AlignedArray _items;
         private readonly int _size; // The logical size.
@@ -53,10 +53,10 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
         {
             Contracts.Assert(0 < size);
             // cbAlign should be a power of two.
-            Contracts.Assert(sizeof(Float) <= cbAlign);
+            Contracts.Assert(sizeof(float) <= cbAlign);
             Contracts.Assert((cbAlign & (cbAlign - 1)) == 0);
 
-            int cfltAlign = cbAlign / sizeof(Float);
+            int cfltAlign = cbAlign / sizeof(float);
             int cflt = RoundUp(size, cfltAlign);
             _items = new AlignedArray(cflt, cbAlign);
             _size = size;
@@ -97,7 +97,7 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
         /// </summary>
         /// <param name="index">The index</param>
         /// <returns>The value at the given index</returns>
-        public Float this[int index]
+        public float this[int index]
         {
             get
             {
@@ -116,7 +116,7 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
         /// </summary>
         /// <param name="i">The index</param>
         /// <returns>The value at the given index</returns>
-        public Float GetValue(int i)
+        public float GetValue(int i)
         {
             Contracts.Assert(0 <= i && i < _size);
             return _items[i];
@@ -126,7 +126,7 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
         /// Assign randomized values to the vector elements via the input function.
         /// </summary>
         /// <param name="rand">The input rand om function that takes no arguments and returns a float value</param>
-        public void Randomize(Func<Float> rand)
+        public void Randomize(Func<float> rand)
         {
             Contracts.AssertValue(rand);
             for (int i = 0; i < _size; i++)
@@ -146,7 +146,7 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
         /// </summary>
         /// <param name="dst">The destination array</param>
         /// <param name="ivDst">The starting index in the destination array</param>
-        public void CopyTo(Float[] dst, ref int ivDst)
+        public void CopyTo(float[] dst, ref int ivDst)
         {
             Contracts.AssertValue(dst);
             Contracts.Assert(0 <= ivDst && ivDst <= dst.Length - _size);
@@ -162,7 +162,7 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
         /// <param name="dst">The destination array</param>
         /// <param name="ivDst">The starting index in the destination array</param>
         /// <param name="count">The number of elements to be copied</param>
-        public void CopyTo(int ivSrc, Float[] dst, int ivDst, int count)
+        public void CopyTo(int ivSrc, float[] dst, int ivDst, int count)
         {
             Contracts.AssertValue(dst);
             Contracts.Assert(0 <= count && count <= dst.Length);
@@ -176,11 +176,11 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
         /// </summary>
         /// <param name="src">The source array</param>
         /// <param name="index">The starting index in the source array</param>
-        public void CopyFrom(Float[] src, ref int index)
+        public void CopyFrom(float[] src, ref int index)
         {
             Contracts.AssertValue(src);
             Contracts.Assert(0 <= index && index <= src.Length - _size);
-            _items.CopyFrom(src, index, _size);
+            _items.CopyFrom(src.AsSpan(index, _size));
             index += _size;
         }
 
@@ -192,13 +192,13 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
         /// <param name="src">The source array</param>
         /// <param name="ivSrc">The starting index in the source array</param>
         /// <param name="count">The number of elements to be copied</param>
-        public void CopyFrom(int ivDst, Float[] src, int ivSrc, int count)
+        public void CopyFrom(int ivDst, float[] src, int ivSrc, int count)
         {
             Contracts.AssertValue(src);
             Contracts.Assert(0 <= count && count <= src.Length);
             Contracts.Assert(0 <= ivDst && ivDst <= _size - count);
             Contracts.Assert(0 <= ivSrc && ivSrc <= src.Length - count);
-            _items.CopyFrom(ivDst, src, ivSrc, _size);
+            _items.CopyFrom(ivDst, src.AsSpan(ivSrc, _size));
         }
 
         /// <summary>
@@ -215,7 +215,7 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
         /// <summary>
         /// Get the underlying AlignedArray as IEnumerator&lt;Float&gt;.
         /// </summary>
-        public IEnumerator<Float> GetEnumerator()
+        public IEnumerator<float> GetEnumerator()
         {
             for (int i = 0; i < _size; i++)
                 yield return _items[i];
@@ -231,7 +231,8 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
     /// This implements a logical matrix of Floats that is automatically aligned for SSE/AVX operations.
     /// The ctor takes an alignment value, which must be a power of two at least sizeof(Float).
     /// </summary>
-    public abstract class CpuAlignedMatrixBase
+    [BestFriend]
+    internal abstract class CpuAlignedMatrixBase
     {
         // _items includes "head" items filled with NaN, followed by RunLenPhy * RunCntPhy entries, followed by
         // "tail" items, also filled with NaN. Note that RunLenPhy and RunCntPhy are divisible by the alignment
@@ -303,13 +304,13 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
             Contracts.Assert(0 < runLen);
             Contracts.Assert(0 < runCnt);
             // cbAlign should be a power of two.
-            Contracts.Assert(sizeof(Float) <= cbAlign);
+            Contracts.Assert(sizeof(float) <= cbAlign);
             Contracts.Assert((cbAlign & (cbAlign - 1)) == 0);
 
             RunLen = runLen;
             RunCnt = runCnt;
 
-            FloatAlign = cbAlign / sizeof(Float);
+            FloatAlign = cbAlign / sizeof(float);
             Shift = GeneralUtils.CbitLowZero((uint)FloatAlign);
             Mask = FloatAlign - 1;
 
@@ -352,7 +353,7 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
         /// Assign randomized values to the matrix elements via the input function.
         /// </summary>
         /// <param name="rand">The input rand om function that takes no arguments and returns a float value</param>
-        public void Randomize(Func<Float> rand)
+        public void Randomize(Func<float> rand)
         {
             Contracts.AssertValue(rand);
             for (int i = 0, k = 0; i < RunCnt; i++)
@@ -393,7 +394,8 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
     /// This implements a logical row-major matrix of Floats that is automatically aligned for SSE/AVX operations.
     /// The ctor takes an alignment value, which must be a power of two at least sizeof(Float).
     /// </summary>
-    public abstract class CpuAlignedMatrixRowBase : CpuAlignedMatrixBase, ICpuBuffer<Float>
+    [BestFriend]
+    internal abstract class CpuAlignedMatrixRowBase : CpuAlignedMatrixBase, ICpuBuffer<float>
     {
         protected CpuAlignedMatrixRowBase(int crow, int ccol, int cbAlign)
             : base(ccol, crow, cbAlign)
@@ -425,7 +427,7 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
         /// </summary>
         /// <param name="dst">The destination array</param>
         /// <param name="ivDst">The starting index in the destination array</param>
-        public void CopyTo(Float[] dst, ref int ivDst)
+        public void CopyTo(float[] dst, ref int ivDst)
         {
             Contracts.AssertValue(dst);
             Contracts.Assert(0 <= ivDst && ivDst <= dst.Length - ValueCount);
@@ -454,21 +456,21 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
         /// </summary>
         /// <param name="src">The source array</param>
         /// <param name="ivSrc">The starting index in the source array</param>
-        public void CopyFrom(Float[] src, ref int ivSrc)
+        public void CopyFrom(float[] src, ref int ivSrc)
         {
             Contracts.AssertValue(src);
             Contracts.Assert(0 <= ivSrc && ivSrc <= src.Length - ValueCount);
 
             if (ColCount == ColCountPhy)
             {
-                Items.CopyFrom(src, ivSrc, ValueCount);
+                Items.CopyFrom(src.AsSpan(ivSrc, ValueCount));
                 ivSrc += ValueCount;
             }
             else
             {
                 for (int row = 0; row < RowCount; row++)
                 {
-                    Items.CopyFrom(row * ColCountPhy, src, ivSrc, ColCount);
+                    Items.CopyFrom(row * ColCountPhy, src.AsSpan(ivSrc, ColCount));
                     ivSrc += ColCount;
                 }
             }
@@ -477,7 +479,7 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
         /// <summary>
         /// Get the underlying AlignedArray as IEnumerator&lt;Float&gt;.
         /// </summary>
-        public IEnumerator<Float> GetEnumerator()
+        public IEnumerator<float> GetEnumerator()
         {
             for (int row = 0; row < RowCount; row++)
             {
@@ -497,7 +499,8 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
     /// This implements a row-major matrix of Floats that is automatically aligned for SSE/AVX operations.
     /// The ctor takes an alignment value, which must be a power of two at least sizeof(Float).
     /// </summary>
-    public sealed class CpuAlignedMatrixRow : CpuAlignedMatrixRowBase, ICpuFullMatrix
+    [BestFriend]
+    internal sealed class CpuAlignedMatrixRow : CpuAlignedMatrixRowBase, ICpuFullMatrix
     {
         public CpuAlignedMatrixRow(int crow, int ccol, int cbAlign)
             : base(crow, ccol, cbAlign)
@@ -530,7 +533,7 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
         /// <param name="row">The starting row in this matrix</param>
         /// <param name="dst">The destination array</param>
         /// <param name="ivDst">The starting index in the destination array</param>
-        public void CopyTo(int row, Float[] dst, ref int ivDst)
+        public void CopyTo(int row, float[] dst, ref int ivDst)
         {
             Contracts.AssertValue(dst);
             Contracts.Assert(0 <= row && row < RowCount);
@@ -558,7 +561,8 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
     /// This implements a logical matrix of Floats that is automatically aligned for SSE/AVX operations.
     /// The ctor takes an alignment value, which must be a power of two at least sizeof(Float).
     /// </summary>
-    public sealed class CpuAlignedMatrixCol : CpuAlignedMatrixBase, ICpuFullMatrix
+    [BestFriend]
+    internal sealed class CpuAlignedMatrixCol : CpuAlignedMatrixBase, ICpuFullMatrix
     {
         /// <summary>
         /// Allocate an aligned matrix with the given alignment (in bytes).
@@ -593,7 +597,7 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
         /// </summary>
         /// <param name="dst">The destination array</param>
         /// <param name="ivDst">The starting index in the destination array</param>
-        public void CopyTo(Float[] dst, ref int ivDst)
+        public void CopyTo(float[] dst, ref int ivDst)
         {
             Contracts.AssertValue(dst);
             Contracts.Assert(0 <= ivDst && ivDst <= dst.Length - ValueCount);
@@ -611,7 +615,7 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
         /// <param name="row">The starting row in this matrix</param>
         /// <param name="dst">The destination array</param>
         /// <param name="ivDst">The starting index in the destination array</param>
-        public void CopyTo(int row, Float[] dst, ref int ivDst)
+        public void CopyTo(int row, float[] dst, ref int ivDst)
         {
             Contracts.AssertValue(dst);
             Contracts.Assert(0 <= row && row < RowCount);
@@ -626,7 +630,7 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
         /// </summary>
         /// <param name="src">The source array</param>
         /// <param name="ivSrc">The starting index in the source array</param>
-        public void CopyFrom(Float[] src, ref int ivSrc)
+        public void CopyFrom(float[] src, ref int ivSrc)
         {
             Contracts.AssertValue(src);
             Contracts.Assert(0 <= ivSrc && ivSrc <= src.Length - ValueCount);
@@ -658,7 +662,7 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
         /// <summary>
         /// Get the underlying AlignedArray as IEnumerator&lt;Float&gt;.
         /// </summary>
-        public IEnumerator<Float> GetEnumerator()
+        public IEnumerator<float> GetEnumerator()
         {
             for (int row = 0; row < RowCount; row++)
             {

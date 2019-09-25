@@ -4,26 +4,27 @@
 
 using System;
 using System.Text;
+using Microsoft.ML;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Data;
+using Microsoft.ML.EntryPoints;
+using Microsoft.ML.Internal.Utilities;
 using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.EntryPoints;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Runtime.Model;
-using Microsoft.ML.Runtime.Internal.Internallearn;
+using Microsoft.ML.Transforms;
 
-[assembly: LoadableClass(typeof(LabelIndicatorTransform), typeof(LabelIndicatorTransform.Arguments), typeof(SignatureDataTransform),
+[assembly: LoadableClass(typeof(LabelIndicatorTransform), typeof(LabelIndicatorTransform.Options), typeof(SignatureDataTransform),
     LabelIndicatorTransform.UserName, LabelIndicatorTransform.LoadName, "LabelIndicator")]
 [assembly: LoadableClass(typeof(LabelIndicatorTransform), null, typeof(SignatureLoadDataTransform), LabelIndicatorTransform.UserName,
     LabelIndicatorTransform.LoaderSignature)]
 [assembly: LoadableClass(typeof(void), typeof(LabelIndicatorTransform), null, typeof(SignatureEntryPointModule), LabelIndicatorTransform.LoadName)]
 
-namespace Microsoft.ML.Runtime.Data
+namespace Microsoft.ML.Transforms
 {
     /// <summary>
     /// Remaps multiclass labels to binary T,F labels, primarily for use with OVA.
     /// </summary>
-    public sealed class LabelIndicatorTransform : OneToOneTransformBase
+    [BestFriend]
+    internal sealed class LabelIndicatorTransform : OneToOneTransformBase
     {
         internal const string Summary = "Remaps labels from multiclass to binary, for OVA.";
         internal const string UserName = "Label Indicator Transform";
@@ -48,7 +49,7 @@ namespace Microsoft.ML.Runtime.Data
             [Argument(ArgumentType.AtMostOnce, HelpText = "The positive example class for binary classification.", ShortName = "index")]
             public int? ClassIndex;
 
-            public static Column Parse(string str)
+            internal static Column Parse(string str)
             {
                 Contracts.AssertNonEmpty(str);
 
@@ -58,17 +59,17 @@ namespace Microsoft.ML.Runtime.Data
                 return null;
             }
 
-            public bool TryUnparse(StringBuilder sb)
+            internal bool TryUnparse(StringBuilder sb)
             {
                 Contracts.AssertValue(sb);
                 return TryUnparseCore(sb);
             }
         }
 
-        public sealed class Arguments : TransformInputBase
+        public sealed class Options : TransformInputBase
         {
-            [Argument(ArgumentType.Multiple, HelpText = "New column definition(s) (optional form: name:src)", ShortName = "col", SortOrder = 1)]
-            public Column[] Column;
+            [Argument(ArgumentType.Multiple, HelpText = "New column definition(s) (optional form: name:src)", Name = "Column", ShortName = "col", SortOrder = 1)]
+            public Column[] Columns;
 
             [Argument(ArgumentType.AtMostOnce, HelpText = "Label of the positive class.", ShortName = "index")]
             public int ClassIndex;
@@ -86,17 +87,17 @@ namespace Microsoft.ML.Runtime.Data
         }
 
         public static LabelIndicatorTransform Create(IHostEnvironment env,
-            Arguments args, IDataView input)
+            Options options, IDataView input)
         {
             Contracts.CheckValue(env, nameof(env));
             IHost h = env.Register(LoaderSignature);
-            h.CheckValue(args, nameof(args));
+            h.CheckValue(options, nameof(options));
             h.CheckValue(input, nameof(input));
             return h.Apply("Loading Model",
-                ch => new LabelIndicatorTransform(h, args, input));
+                ch => new LabelIndicatorTransform(h, options, input));
         }
 
-        public override void Save(ModelSaveContext ctx)
+        private protected override void SaveModel(ModelSaveContext ctx)
         {
             Host.CheckValue(ctx, nameof(ctx));
             ctx.CheckAtModel();
@@ -105,15 +106,15 @@ namespace Microsoft.ML.Runtime.Data
             ctx.Writer.WriteIntStream(_classIndex);
         }
 
-        private static string TestIsMulticlassLabel(ColumnType type)
+        private static string TestIsMulticlassLabel(DataViewType type)
         {
-            if (type.KeyCount > 0 || type == NumberType.R4 || type == NumberType.R8)
+            if (type.GetKeyCount() > 0 || type == NumberDataViewType.Single || type == NumberDataViewType.Double)
                 return null;
             return $"Label column type is not supported for binary remapping: {type}. Supported types: key, float, double.";
         }
 
         /// <summary>
-        /// Convenience constructor for public facing API.
+        /// Initializes a new instance of <see cref="LabelIndicatorTransform"/>.
         /// </summary>
         /// <param name="env">Host Environment.</param>
         /// <param name="input">Input <see cref="IDataView"/>. This is the output from previous transform or loader.</param>
@@ -125,20 +126,20 @@ namespace Microsoft.ML.Runtime.Data
             int classIndex,
             string name,
             string source = null)
-            : this(env, new Arguments() { Column = new[] { new Column() { Source = source ?? name, Name = name } }, ClassIndex = classIndex }, input)
+            : this(env, new Options() { Columns = new[] { new Column() { Source = source ?? name, Name = name } }, ClassIndex = classIndex }, input)
         {
         }
 
-        public LabelIndicatorTransform(IHostEnvironment env, Arguments args, IDataView input)
-            : base(env, LoadName, Contracts.CheckRef(args, nameof(args)).Column,
+        public LabelIndicatorTransform(IHostEnvironment env, Options options, IDataView input)
+            : base(env, LoadName, Contracts.CheckRef(options, nameof(options)).Columns,
                 input, TestIsMulticlassLabel)
         {
             Host.AssertNonEmpty(Infos);
-            Host.Assert(Infos.Length == Utils.Size(args.Column));
+            Host.Assert(Infos.Length == Utils.Size(options.Columns));
             _classIndex = new int[Infos.Length];
 
             for (int iinfo = 0; iinfo < Infos.Length; ++iinfo)
-                _classIndex[iinfo] = args.Column[iinfo].ClassIndex ?? args.ClassIndex;
+                _classIndex[iinfo] = options.Columns[iinfo].ClassIndex ?? options.ClassIndex;
 
             Metadata.Seal();
         }
@@ -157,13 +158,13 @@ namespace Microsoft.ML.Runtime.Data
             Metadata.Seal();
         }
 
-        protected override ColumnType GetColumnTypeCore(int iinfo)
+        protected override DataViewType GetColumnTypeCore(int iinfo)
         {
             Host.Assert(0 <= iinfo && iinfo < Infos.Length);
-            return BoolType.Instance;
+            return BooleanDataViewType.Instance;
         }
 
-        protected override Delegate GetGetterCore(IChannel ch, IRow input,
+        protected override Delegate GetGetterCore(IChannel ch, DataViewRow input,
             int iinfo, out Action disposer)
         {
             Host.AssertValue(ch);
@@ -175,18 +176,19 @@ namespace Microsoft.ML.Runtime.Data
             return GetGetter(ch, input, iinfo);
         }
 
-        private ValueGetter<bool> GetGetter(IChannel ch, IRow input, int iinfo)
+        private ValueGetter<bool> GetGetter(IChannel ch, DataViewRow input, int iinfo)
         {
             Host.AssertValue(ch);
             ch.AssertValue(input);
             ch.Assert(0 <= iinfo && iinfo < Infos.Length);
 
             var info = Infos[iinfo];
+            var column = input.Schema[info.Source];
             ch.Assert(TestIsMulticlassLabel(info.TypeSrc) == null);
 
-            if (info.TypeSrc.KeyCount > 0)
+            if (info.TypeSrc.GetKeyCount() > 0)
             {
-                var srcGetter = input.GetGetter<uint>(info.Source);
+                var srcGetter = input.GetGetter<uint>(column);
                 var src = default(uint);
                 uint cls = (uint)(_classIndex[iinfo] + 1);
 
@@ -197,9 +199,9 @@ namespace Microsoft.ML.Runtime.Data
                         dst = src == cls;
                     };
             }
-            if (info.TypeSrc == NumberType.R4)
+            if (info.TypeSrc == NumberDataViewType.Single)
             {
-                var srcGetter = input.GetGetter<float>(info.Source);
+                var srcGetter = input.GetGetter<float>(column);
                 var src = default(float);
 
                 return
@@ -209,9 +211,9 @@ namespace Microsoft.ML.Runtime.Data
                         dst = src == _classIndex[iinfo];
                     };
             }
-            if (info.TypeSrc == NumberType.R8)
+            if (info.TypeSrc == NumberDataViewType.Double)
             {
-                var srcGetter = input.GetGetter<double>(info.Source);
+                var srcGetter = input.GetGetter<double>(column);
                 var src = default(double);
 
                 return
@@ -226,7 +228,7 @@ namespace Microsoft.ML.Runtime.Data
 
         [TlcModule.EntryPoint(Name = "Transforms.LabelIndicator", Desc = "Label remapper used by OVA", UserName = "LabelIndicator",
             ShortName = "LabelIndictator")]
-        public static CommonOutputs.TransformOutput LabelIndicator(IHostEnvironment env, Arguments input)
+        public static CommonOutputs.TransformOutput LabelIndicator(IHostEnvironment env, Options input)
         {
             Contracts.CheckValue(env, nameof(env));
             var host = env.Register("LabelIndictator");
@@ -234,7 +236,7 @@ namespace Microsoft.ML.Runtime.Data
             EntryPointUtils.CheckInputArgs(host, input);
 
             var xf = Create(host, input, input.Data);
-            return new CommonOutputs.TransformOutput { Model = new TransformModel(env, xf, input.Data), OutputData = xf };
+            return new CommonOutputs.TransformOutput { Model = new TransformModelImpl(env, xf, input.Data), OutputData = xf };
         }
     }
 }

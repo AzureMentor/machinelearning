@@ -4,20 +4,21 @@
 
 using System;
 using System.Reflection;
-using Microsoft.ML.Runtime.Data.Conversion;
-using Microsoft.ML.Runtime.Model;
+using Microsoft.ML.Data.Conversion;
+using Microsoft.ML.Runtime;
 
-namespace Microsoft.ML.Runtime.Data
+namespace Microsoft.ML.Data
 {
     /// <summary>
     /// This applies the user provided ValueMapper to a column to produce a new column. It automatically
     /// injects a standard conversion from the actual type of the source column to typeSrc (if needed).
     /// </summary>
-    public static class LambdaColumnMapper
+    [BestFriend]
+    internal static class LambdaColumnMapper
     {
         // REVIEW: It would be nice to support propagation of select metadata.
         public static IDataView Create<TSrc, TDst>(IHostEnvironment env, string name, IDataView input,
-            string src, string dst, ColumnType typeSrc, ColumnType typeDst, ValueMapper<TSrc, TDst> mapper,
+            string src, string dst, DataViewType typeSrc, DataViewType typeDst, ValueMapper<TSrc, TDst> mapper,
             ValueGetter<VBuffer<ReadOnlyMemory<char>>> keyValueGetter = null, ValueGetter<VBuffer<ReadOnlyMemory<char>>> slotNamesGetter = null)
         {
             Contracts.CheckValue(env, nameof(env));
@@ -28,8 +29,8 @@ namespace Microsoft.ML.Runtime.Data
             env.CheckValue(typeSrc, nameof(typeSrc));
             env.CheckValue(typeDst, nameof(typeDst));
             env.CheckValue(mapper, nameof(mapper));
-            env.Check(keyValueGetter == null || typeDst.ItemType.IsKey);
-            env.Check(slotNamesGetter == null || typeDst.IsKnownSizeVector);
+            env.Check(keyValueGetter == null || typeDst.GetItemType() is KeyDataViewType);
+            env.Check(slotNamesGetter == null || typeDst.IsKnownSizeVector());
 
             if (typeSrc.RawType != typeof(TSrc))
             {
@@ -45,7 +46,7 @@ namespace Microsoft.ML.Runtime.Data
             bool tmp = input.Schema.TryGetColumnIndex(src, out int colSrc);
             if (!tmp)
                 throw env.ExceptParam(nameof(src), "The input data doesn't have a column named '{0}'", src);
-            var typeOrig = input.Schema.GetColumnType(colSrc);
+            var typeOrig = input.Schema[colSrc].Type;
 
             // REVIEW: Ideally this should support vector-type conversion. It currently doesn't.
             bool ident;
@@ -68,7 +69,7 @@ namespace Microsoft.ML.Runtime.Data
                 impl = new Impl<TSrc, TDst, TDst>(env, name, input, col, typeDst, mapper, keyValueGetter: keyValueGetter, slotNamesGetter: slotNamesGetter);
             else
             {
-                Func<IHostEnvironment, string, IDataView, Column, ColumnType, ValueMapper<int, int>,
+                Func<IHostEnvironment, string, IDataView, Column, DataViewType, ValueMapper<int, int>,
                     ValueMapper<int, int>, ValueGetter<VBuffer<ReadOnlyMemory<char>>>, ValueGetter<VBuffer<ReadOnlyMemory<char>>>,
                     Impl<int, int, int>> del = CreateImpl<int, int, int>;
                 var meth = del.GetMethodInfo().GetGenericMethodDefinition()
@@ -81,7 +82,7 @@ namespace Microsoft.ML.Runtime.Data
 
         private static Impl<T1, T2, T3> CreateImpl<T1, T2, T3>(
             IHostEnvironment env, string name, IDataView input, Column col,
-            ColumnType typeDst, ValueMapper<T1, T2> map1, ValueMapper<T2, T3> map2,
+            DataViewType typeDst, ValueMapper<T1, T2> map1, ValueMapper<T2, T3> map2,
             ValueGetter<VBuffer<ReadOnlyMemory<char>>> keyValueGetter, ValueGetter<VBuffer<ReadOnlyMemory<char>>> slotNamesGetter)
         {
             return new Impl<T1, T2, T3>(env, name, input, col, typeDst, map1, map2, keyValueGetter);
@@ -98,12 +99,12 @@ namespace Microsoft.ML.Runtime.Data
 
         private sealed class Impl<T1, T2, T3> : OneToOneTransformBase
         {
-            private readonly ColumnType _typeDst;
+            private readonly DataViewType _typeDst;
             private readonly ValueMapper<T1, T2> _map1;
             private readonly ValueMapper<T2, T3> _map2;
 
             public Impl(IHostEnvironment env, string name, IDataView input, OneToOneColumn col,
-                ColumnType typeDst, ValueMapper<T1, T2> map1, ValueMapper<T2, T3> map2 = null,
+                DataViewType typeDst, ValueMapper<T1, T2> map1, ValueMapper<T2, T3> map2 = null,
                 ValueGetter<VBuffer<ReadOnlyMemory<char>>> keyValueGetter = null, ValueGetter<VBuffer<ReadOnlyMemory<char>>> slotNamesGetter = null)
                 : base(env, name, new[] { col }, input, x => null)
             {
@@ -121,36 +122,36 @@ namespace Microsoft.ML.Runtime.Data
                     {
                         if (keyValueGetter != null)
                         {
-                            Host.Assert(_typeDst.ItemType.KeyCount > 0);
-                            MetadataUtils.MetadataGetter<VBuffer<ReadOnlyMemory<char>>> mdGetter =
+                            AnnotationUtils.AnnotationGetter<VBuffer<ReadOnlyMemory<char>>> mdGetter =
                                 (int c, ref VBuffer<ReadOnlyMemory<char>> dst) => keyValueGetter(ref dst);
-                            bldr.AddGetter(MetadataUtils.Kinds.KeyValues, new VectorType(TextType.Instance, _typeDst.ItemType.KeyCount), mdGetter);
+                            bldr.AddGetter(AnnotationUtils.Kinds.KeyValues, new VectorDataViewType(TextDataViewType.Instance, _typeDst.GetItemType().GetKeyCountAsInt32(Host)), mdGetter);
                         }
                         if (slotNamesGetter != null)
                         {
-                            Host.Assert(_typeDst.VectorSize > 0);
-                            MetadataUtils.MetadataGetter<VBuffer<ReadOnlyMemory<char>>> mdGetter =
+                            int vectorSize = _typeDst.GetVectorSize();
+                            Host.Assert(vectorSize > 0);
+                            AnnotationUtils.AnnotationGetter<VBuffer<ReadOnlyMemory<char>>> mdGetter =
                                 (int c, ref VBuffer<ReadOnlyMemory<char>> dst) => slotNamesGetter(ref dst);
-                            bldr.AddGetter(MetadataUtils.Kinds.SlotNames, new VectorType(TextType.Instance, _typeDst.VectorSize), mdGetter);
+                            bldr.AddGetter(AnnotationUtils.Kinds.SlotNames, new VectorDataViewType(TextDataViewType.Instance, vectorSize), mdGetter);
                         }
                     }
                 }
                 Metadata.Seal();
             }
 
-            public override void Save(ModelSaveContext ctx)
+            private protected override void SaveModel(ModelSaveContext ctx)
             {
                 Host.Assert(false, "Shouldn't serialize this!");
                 throw Host.ExceptNotSupp("Shouldn't serialize this");
             }
 
-            protected override ColumnType GetColumnTypeCore(int iinfo)
+            protected override DataViewType GetColumnTypeCore(int iinfo)
             {
                 Host.Assert(iinfo == 0);
                 return _typeDst;
             }
 
-            protected override Delegate GetGetterCore(IChannel ch, IRow input, int iinfo, out Action disposer)
+            protected override Delegate GetGetterCore(IChannel ch, DataViewRow input, int iinfo, out Action disposer)
             {
                 Host.AssertValueOrNull(ch);
                 Host.AssertValue(input);
@@ -165,7 +166,7 @@ namespace Microsoft.ML.Runtime.Data
                         (ref T2 v2) =>
                         {
                             getSrc(ref v1);
-                            _map1(ref v1, ref v2);
+                            _map1(in v1, ref v2);
                         };
                     return getter;
                 }
@@ -178,8 +179,8 @@ namespace Microsoft.ML.Runtime.Data
                         (ref T3 v3) =>
                         {
                             getSrc(ref v1);
-                            _map1(ref v1, ref v2);
-                            _map2(ref v2, ref v3);
+                            _map1(in v1, ref v2);
+                            _map2(in v2, ref v3);
                         };
                     return getter;
                 }

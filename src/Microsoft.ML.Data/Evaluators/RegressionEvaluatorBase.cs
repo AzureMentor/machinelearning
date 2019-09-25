@@ -4,12 +4,15 @@
 
 using System;
 using System.Collections.Generic;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Internal.Utilities;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Runtime;
+using Microsoft.ML.Trainers;
 
-namespace Microsoft.ML.Runtime.Data
+namespace Microsoft.ML.Data
 {
-    public abstract class RegressionLossEvaluatorBase<TAgg> : RowToRowEvaluatorBase<TAgg>
+    [BestFriend]
+    internal abstract class RegressionLossEvaluatorBase<TAgg> : RowToRowEvaluatorBase<TAgg>
         where TAgg : EvaluatorBase<TAgg>.AggregatorBase
     {
         public abstract class ArgumentsBase
@@ -34,15 +37,17 @@ namespace Microsoft.ML.Runtime.Data
         }
     }
 
-    public abstract class RegressionEvaluatorBase<TAgg, TScore, TMetrics> : RegressionLossEvaluatorBase<TAgg>
+    [BestFriend]
+    internal abstract class RegressionEvaluatorBase<TAgg, TScore, TMetrics> : RegressionLossEvaluatorBase<TAgg>
         where TAgg : RegressionEvaluatorBase<TAgg, TScore, TMetrics>.RegressionAggregatorBase
     {
-        protected RegressionEvaluatorBase(ArgumentsBase args, IHostEnvironment env, string registrationName)
+        [BestFriend]
+        private protected RegressionEvaluatorBase(ArgumentsBase args, IHostEnvironment env, string registrationName)
             : base(args, env, registrationName)
         {
         }
 
-        protected override void GetAggregatorConsolidationFuncs(TAgg aggregator, AggregatorDictionaryBase[] dictionaries,
+        private protected override void GetAggregatorConsolidationFuncs(TAgg aggregator, AggregatorDictionaryBase[] dictionaries,
             out Action<uint, ReadOnlyMemory<char>, TAgg> addAgg, out Func<Dictionary<string, IDataView>> consolidate)
         {
             var stratCol = new List<uint>();
@@ -89,11 +94,11 @@ namespace Microsoft.ML.Runtime.Data
                     var overallDvBldr = new ArrayDataViewBuilder(Host);
                     if (hasStrats)
                     {
-                        overallDvBldr.AddColumn(MetricKinds.ColumnNames.StratCol, GetKeyValueGetter(dictionaries), 0, dictionaries.Length, stratCol.ToArray());
-                        overallDvBldr.AddColumn(MetricKinds.ColumnNames.StratVal, TextType.Instance, stratVal.ToArray());
+                        overallDvBldr.AddColumn(MetricKinds.ColumnNames.StratCol, GetKeyValueGetter(dictionaries), (ulong)dictionaries.Length, stratCol.ToArray());
+                        overallDvBldr.AddColumn(MetricKinds.ColumnNames.StratVal, TextDataViewType.Instance, stratVal.ToArray());
                     }
                     if (hasWeight)
-                        overallDvBldr.AddColumn(MetricKinds.ColumnNames.IsWeighted, BoolType.Instance, isWeighted.ToArray());
+                        overallDvBldr.AddColumn(MetricKinds.ColumnNames.IsWeighted, BooleanDataViewType.Instance, isWeighted.ToArray());
                     aggregator.AddColumn(overallDvBldr, L1, l1.ToArray());
                     aggregator.AddColumn(overallDvBldr, L2, l2.ToArray());
                     aggregator.AddColumn(overallDvBldr, Rms, rms.ToArray());
@@ -123,7 +128,7 @@ namespace Microsoft.ML.Runtime.Data
                     {
                         var res = Zero();
                         if (SumWeights > 0)
-                            Normalize(ref TotalL1Loss, ref res);
+                            Normalize(in TotalL1Loss, ref res);
                         return res;
                     }
                 }
@@ -134,7 +139,7 @@ namespace Microsoft.ML.Runtime.Data
                     {
                         var res = Zero();
                         if (SumWeights > 0)
-                            Normalize(ref TotalL2Loss, ref res);
+                            Normalize(in TotalL2Loss, ref res);
                         return res;
                     }
                 }
@@ -148,7 +153,7 @@ namespace Microsoft.ML.Runtime.Data
                     {
                         var res = Zero();
                         if (SumWeights > 0)
-                            Normalize(ref TotalLoss, ref res);
+                            Normalize(in TotalLoss, ref res);
                         return res;
                     }
                 }
@@ -160,12 +165,12 @@ namespace Microsoft.ML.Runtime.Data
                     SumWeights += weight;
                     TotalLabelW += label * weight;
                     TotalLabelSquaredW += label * label * weight;
-                    UpdateCore(label, ref score, ref loss, weight);
+                    UpdateCore(label, in score, in loss, weight);
                 }
 
-                protected abstract void UpdateCore(float label, ref TScore score, ref TMetrics loss, float weight);
+                protected abstract void UpdateCore(float label, in TScore score, in TMetrics loss, float weight);
 
-                protected abstract void Normalize(ref TMetrics src, ref TMetrics dst);
+                protected abstract void Normalize(in TMetrics src, ref TMetrics dst);
 
                 protected abstract TMetrics Zero();
             }
@@ -183,7 +188,8 @@ namespace Microsoft.ML.Runtime.Data
             public abstract CountersBase UnweightedCounters { get; }
             public abstract CountersBase WeightedCounters { get; }
 
-            protected RegressionAggregatorBase(IHostEnvironment env, IRegressionLoss lossFunction, bool weighted, string stratName)
+            [BestFriend]
+            private protected RegressionAggregatorBase(IHostEnvironment env, IRegressionLoss lossFunction, bool weighted, string stratName)
                 : base(env, stratName)
             {
                 Host.AssertValue(lossFunction);
@@ -191,20 +197,20 @@ namespace Microsoft.ML.Runtime.Data
                 Weighted = weighted;
             }
 
-            public override void InitializeNextPass(IRow row, RoleMappedSchema schema)
+            internal override void InitializeNextPass(DataViewRow row, RoleMappedSchema schema)
             {
                 Contracts.Assert(PassNum < 1);
-                Contracts.AssertValue(schema.Label);
+                Contracts.Assert(schema.Label.HasValue);
 
-                var score = schema.GetUniqueColumn(MetadataUtils.Const.ScoreValueKind.Score);
+                var score = schema.GetUniqueColumn(AnnotationUtils.Const.ScoreValueKind.Score);
 
-                _labelGetter = RowCursorUtils.GetLabelGetter(row, schema.Label.Index);
-                _scoreGetter = row.GetGetter<TScore>(score.Index);
+                _labelGetter = RowCursorUtils.GetLabelGetter(row, schema.Label.Value.Index);
+                _scoreGetter = row.GetGetter<TScore>(score);
                 Contracts.AssertValue(_labelGetter);
                 Contracts.AssertValue(_scoreGetter);
 
-                if (schema.Weight != null)
-                    _weightGetter = row.GetGetter<float>(schema.Weight.Index);
+                if (schema.Weight.HasValue)
+                    _weightGetter = row.GetGetter<float>(schema.Weight.Value);
             }
 
             public override void ProcessRow()
@@ -219,7 +225,7 @@ namespace Microsoft.ML.Runtime.Data
                     return;
                 }
 
-                if (IsNaN(ref Score))
+                if (IsNaN(in Score))
                 {
                     NumBadScores++;
                     return;
@@ -236,15 +242,15 @@ namespace Microsoft.ML.Runtime.Data
                     }
                 }
 
-                ApplyLossFunction(ref Score, label, ref Loss);
+                ApplyLossFunction(in Score, label, ref Loss);
                 UnweightedCounters.Update(ref Score, label, 1, ref Loss);
                 if (WeightedCounters != null)
                     WeightedCounters.Update(ref Score, label, weight, ref Loss);
             }
 
-            protected abstract void ApplyLossFunction(ref TScore score, float label, ref TMetrics loss);
+            protected abstract void ApplyLossFunction(in TScore score, float label, ref TMetrics loss);
 
-            protected abstract bool IsNaN(ref TScore score);
+            protected abstract bool IsNaN(in TScore score);
 
             public abstract void AddColumn(ArrayDataViewBuilder dvBldr, string metricName, params TMetrics[] metric);
         }

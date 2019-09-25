@@ -6,10 +6,11 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
-using Microsoft.ML.Runtime.Internal.CpuMath;
-using Microsoft.ML.Runtime.Internal.Utilities;
+using Microsoft.ML.Internal.CpuMath;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Runtime;
 
-namespace Microsoft.ML.Runtime.FastTree.Internal
+namespace Microsoft.ML.Trainers.FastTree
 {
 #if USE_SINGLE_PRECISION
     using FloatType = System.Single;
@@ -20,7 +21,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
     /// <summary>
     /// Trains regression trees.
     /// </summary>
-    public class LeastSquaresRegressionTreeLearner : TreeLearner, ILeafSplitStatisticsCalculator
+    internal class LeastSquaresRegressionTreeLearner : TreeLearner, ILeafSplitStatisticsCalculator
     {
         // parameters
         protected readonly int MinDocsInLeaf;
@@ -68,6 +69,8 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
         protected readonly bool FilterZeros;
         protected readonly double BsrMaxTreeOutput;
 
+        protected readonly IHost Host;
+
         // size of reserved memory
         private readonly long _sizeOfReservedMemory;
 
@@ -113,12 +116,13 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
         /// <param name="bundling"></param>
         /// <param name="minDocsForCategoricalSplit"></param>
         /// <param name="bias"></param>
+        /// <param name="host">Host</param>
         public LeastSquaresRegressionTreeLearner(Dataset trainData, int numLeaves, int minDocsInLeaf, double entropyCoefficient,
             double featureFirstUsePenalty, double featureReusePenalty, double softmaxTemperature, int histogramPoolSize,
             int randomSeed, double splitFraction, bool filterZeros, bool allowEmptyTrees, double gainConfidenceLevel,
             int maxCategoricalGroupsPerNode, int maxCategoricalSplitPointPerNode,
             double bsrMaxTreeOutput, IParallelTraining parallelTraining, double minDocsPercentageForCategoricalSplit,
-            Bundle bundling, int minDocsForCategoricalSplit, double bias)
+            Bundle bundling, int minDocsForCategoricalSplit, double bias, IHost host)
             : base(trainData, numLeaves)
         {
             MinDocsInLeaf = minDocsInLeaf;
@@ -134,6 +138,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
             MinDocsForCategoricalSplit = minDocsForCategoricalSplit;
             Bundling = bundling;
             Bias = bias;
+            Host = host;
 
             _calculateLeafSplitCandidates = ThreadTaskManager.MakeTask(
                 FindBestThresholdForFlockThreadWorker, TrainData.NumFlocks);
@@ -147,6 +152,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
                 histogramPool[i] = new SufficientStatsBase[TrainData.NumFlocks];
                 for (int j = 0; j < TrainData.NumFlocks; j++)
                 {
+                    Host.CheckAlive();
                     var ss = histogramPool[i][j] = TrainData.Flocks[j].CreateSufficientStats(HasWeights);
                     _sizeOfReservedMemory += ss.SizeInBytes();
                 }
@@ -187,12 +193,12 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
             largerCandidates = new LeafSplitCandidates(data);
         }
 
-        protected virtual RegressionTree NewTree()
+        protected virtual InternalRegressionTree NewTree()
         {
-            return new RegressionTree(NumLeaves);
+            return new InternalRegressionTree(NumLeaves);
         }
 
-        protected virtual void MakeDummyRootSplit(RegressionTree tree, double rootTarget, double[] targets)
+        protected virtual void MakeDummyRootSplit(InternalRegressionTree tree, double rootTarget, double[] targets)
         {
             // Pick a random feature and split on it:
             SplitInfo newRootSplitInfo = new SplitInfo();
@@ -213,13 +219,13 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
         /// Learns a new tree for the current outputs
         /// </summary>
         /// <returns>A regression tree</returns>
-        public sealed override RegressionTree FitTargets(IChannel ch, bool[] activeFeatures, double[] targets)
+        internal sealed override InternalRegressionTree FitTargets(IChannel ch, bool[] activeFeatures, double[] targets)
         {
             int maxLeaves = base.NumLeaves;
             using (Timer.Time(TimerEvent.TreeLearnerGetTree))
             {
                 // create a new tree
-                RegressionTree tree = NewTree();
+                InternalRegressionTree tree = NewTree();
                 // Not use weak reference here to avoid the change of activeFeatures in the ParallelInterface.
                 tree.ActiveFeatures = (bool[])activeFeatures.Clone();
 
@@ -275,7 +281,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
             }
         }
 
-        protected virtual void PerformSplit(RegressionTree tree, int bestLeaf, double[] targets, out int lteChild, out int gtChild)
+        protected virtual void PerformSplit(InternalRegressionTree tree, int bestLeaf, double[] targets, out int lteChild, out int gtChild)
         {
             SplitInfo bestSplitInfo = BestSplitInfoPerLeaf[bestLeaf];
 
@@ -497,6 +503,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
         /// </summary>
         private void FindBestThresholdForFlockThreadWorker(int flock)
         {
+            Host.CheckAlive();
             int featureMin = TrainData.FlockToFirstFeature(flock);
             int featureLim = featureMin + TrainData.Flocks[flock].Count;
             // Check if any feature is active.
@@ -648,6 +655,8 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
         protected virtual void FindBestThresholdFromHistogram(SufficientStatsBase histogram,
             LeafSplitCandidates leafSplitCandidates, int flock)
         {
+            Host.CheckAlive();
+
             // Cache histograms for the parallel interface.
             int featureMin = TrainData.FlockToFirstFeature(flock);
             int featureLim = featureMin + TrainData.Flocks[flock].Count;
@@ -811,7 +820,7 @@ namespace Microsoft.ML.Runtime.FastTree.Internal
         /// Contains the memory data structures required for finding the best threshold for a given
         /// feature at a given leaf.
         /// </summary>
-        public sealed class LeafSplitCandidates
+        internal sealed class LeafSplitCandidates
         {
             private int _leafIndex;
             private int _numDocsInLeaf;

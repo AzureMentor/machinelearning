@@ -4,8 +4,8 @@
 
 using System.IO;
 using System.Text;
+using Microsoft.ML.Data;
 using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.Data;
 
 namespace Microsoft.ML.TestFramework
 {

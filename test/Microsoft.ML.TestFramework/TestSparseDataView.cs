@@ -2,13 +2,12 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Microsoft.ML.Runtime.Api;
-using Microsoft.ML.Runtime.Data;
 using System;
+using Microsoft.ML.Data;
 using Xunit;
 using Xunit.Abstractions;
 
-namespace Microsoft.ML.Runtime.RunTests
+namespace Microsoft.ML.RunTests
 {
     public sealed class TestSparseDataView : TestDataViewBase
     {
@@ -48,28 +47,26 @@ namespace Microsoft.ML.Runtime.RunTests
                 new SparseExample<T>() { X = new VBuffer<T> (5, 3, v1, new int[] { 0, 2, 4 }) },
                 new SparseExample<T>() { X = new VBuffer<T> (5, 3, v2, new int[] { 0, 1, 3 }) }
             };
-            using (var host = new ConsoleEnvironment())
+            var env = new MLContext();
+            var data = env.Data.LoadFromEnumerable(inputs);
+            var value = new VBuffer<T>();
+            int n = 0;
+            using (var cur = data.GetRowCursorForAllColumns())
             {
-                var data = host.CreateStreamingDataView(inputs);
-                var value = new VBuffer<T>();
-                int n = 0;
-                using (var cur = data.GetRowCursor(i => true))
+                var getter = cur.GetGetter<VBuffer<T>>(cur.Schema[0]);
+                while (cur.MoveNext())
                 {
-                    var getter = cur.GetGetter<VBuffer<T>>(0);
-                    while (cur.MoveNext())
-                    {
-                        getter(ref value);
-                        Assert.True(value.Count == 3);
-                        ++n;
-                    }
-                }
-                Assert.True(n == 2);
-                var iter = data.AsEnumerable<SparseExample<T>>(host, false).GetEnumerator();
-                n = 0;
-                while (iter.MoveNext())
+                    getter(ref value);
+                    Assert.True(value.GetValues().Length == 3);
                     ++n;
-                Assert.True(n == 2);
+                }
             }
+            Assert.True(n == 2);
+            var iter = env.Data.CreateEnumerable<SparseExample<T>>(data, false).GetEnumerator();
+            n = 0;
+            while (iter.MoveNext())
+                ++n;
+            Assert.True(n == 2);
         }
 
         [Fact]
@@ -90,28 +87,26 @@ namespace Microsoft.ML.Runtime.RunTests
                 new DenseExample<T>() { X = v1 },
                 new DenseExample<T>() { X = v2 }
             };
-            using (var host = new ConsoleEnvironment())
+            var env = new MLContext();
+            var data = env.Data.LoadFromEnumerable(inputs);
+            var value = new VBuffer<T>();
+            int n = 0;
+            using (var cur = data.GetRowCursorForAllColumns())
             {
-                var data = host.CreateStreamingDataView(inputs);
-                var value = new VBuffer<T>();
-                int n = 0;
-                using (var cur = data.GetRowCursor(i => true))
+                var getter = cur.GetGetter<VBuffer<T>>(cur.Schema[0]);
+                while (cur.MoveNext())
                 {
-                    var getter = cur.GetGetter<VBuffer<T>>(0);
-                    while (cur.MoveNext())
-                    {
-                        getter(ref value);
-                        Assert.True(value.Count == 3);
-                        ++n;
-                    }
-                }
-                Assert.True(n == 2);
-                var iter = data.AsEnumerable<DenseExample<T>>(host, false).GetEnumerator();
-                n = 0;
-                while (iter.MoveNext())
+                    getter(ref value);
+                    Assert.True(value.GetValues().Length == 3);
                     ++n;
-                Assert.True(n == 2);
+                }
             }
+            Assert.True(n == 2);
+            var iter = env.Data.CreateEnumerable<DenseExample<T>>(data, false).GetEnumerator();
+            n = 0;
+            while (iter.MoveNext())
+                ++n;
+            Assert.True(n == 2);
         }
     }
 }

@@ -4,14 +4,16 @@
 
 using System.Collections.Generic;
 using System.Linq;
+using Microsoft.ML.Runtime;
 using Newtonsoft.Json.Linq;
 
-namespace Microsoft.ML.Runtime.Model.Pfa
+namespace Microsoft.ML.Model.Pfa
 {
     /// <summary>
     /// A context for defining a restricted sort of PFA output.
     /// </summary>
-    public sealed class PfaContext
+    [BestFriend]
+    internal sealed class PfaContext
     {
         public JToken InputType { get; set; }
         public JToken OutputType { get; set; }
@@ -24,7 +26,7 @@ namespace Microsoft.ML.Runtime.Model.Pfa
         private readonly HashSet<string> _types;
         private readonly IHost _host;
 
-        private struct VariableBlock
+        private readonly struct VariableBlock
         {
             public readonly string Type;
             public readonly KeyValuePair<string, JToken>[] Locals;
@@ -46,7 +48,7 @@ namespace Microsoft.ML.Runtime.Model.Pfa
             }
         }
 
-        private struct CellBlock
+        private readonly struct CellBlock
         {
             public readonly string Name;
             public readonly JToken Type;
@@ -68,7 +70,7 @@ namespace Microsoft.ML.Runtime.Model.Pfa
             }
         }
 
-        private struct FuncBlock
+        private readonly struct FuncBlock
         {
             public readonly string Name;
             public readonly JArray Params;

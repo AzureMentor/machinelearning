@@ -3,68 +3,48 @@
 // See the LICENSE file in the project root for more information.
 
 using BenchmarkDotNet.Attributes;
-using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.Internal.Calibration;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.KMeans;
-using Microsoft.ML.Runtime.Learners;
+using Microsoft.ML.Benchmarks.Harness;
+using Microsoft.ML.Calibrators;
+using Microsoft.ML.Data;
+using Microsoft.ML.TestFramework;
+using Microsoft.ML.Trainers;
 
 namespace Microsoft.ML.Benchmarks
 {
+    [CIBenchmark]
     public class KMeansAndLogisticRegressionBench
     {
-        private readonly string _dataPath = Program.GetInvariantCultureDataPath("adult.train");
+        private readonly string _dataPath = BaseTestClass.GetDataPath("adult.tiny.with-schema.txt");
 
         [Benchmark]
-        public ParameterMixingCalibratedPredictor TrainKMeansAndLR()
+        public CalibratedModelParametersBase<LinearBinaryModelParameters, PlattCalibrator> TrainKMeansAndLR()
         {
-            using (var env = new ConsoleEnvironment(seed: 1))
-            {
-                // Pipeline
-                var loader = TextLoader.ReadFile(env,
-                    new TextLoader.Arguments()
-                    {
-                        HasHeader = true,
-                        Separator = ",",
-                        Column = new[] {
-                            new TextLoader.Column("Label", DataKind.R4, 14),
-                            new TextLoader.Column("CatFeatures", DataKind.TX,
+            var ml = new MLContext(seed: 1);
+            // Pipeline
+
+            var input = ml.Data.LoadFromTextFile(_dataPath, new[] {
+                            new TextLoader.Column("Label", DataKind.Boolean, 0),
+                            new TextLoader.Column("CatFeatures", DataKind.String,
                                 new [] {
-                                    new TextLoader.Range() { Min = 1, Max = 1 },
-                                    new TextLoader.Range() { Min = 3, Max = 3 },
-                                    new TextLoader.Range() { Min = 5, Max = 9 },
-                                    new TextLoader.Range() { Min = 13, Max = 13 }
+                                    new TextLoader.Range() { Min = 1, Max = 8 },
                                 }),
-                            new TextLoader.Column("NumFeatures", DataKind.R4,
+                            new TextLoader.Column("NumFeatures", DataKind.Single,
                                 new [] {
-                                    new TextLoader.Range() { Min = 0, Max = 0 },
-                                    new TextLoader.Range() { Min = 2, Max = 2 },
-                                    new TextLoader.Range() { Min = 4, Max = 4 },
-                                    new TextLoader.Range() { Min = 10, Max = 12 }
-                                })
-                        }
-                    }, new MultiFileSource(_dataPath));
+                                    new TextLoader.Range() { Min = 9, Max = 14 },
+                                }),
+            }, hasHeader: true);
 
-                IDataView trans = CategoricalTransform.Create(env, loader, "CatFeatures");
+            var estimatorPipeline = ml.Transforms.Categorical.OneHotEncoding("CatFeatures")
+                .Append(ml.Transforms.NormalizeMinMax("NumFeatures"))
+                .Append(ml.Transforms.Concatenate("Features", "NumFeatures", "CatFeatures"))
+                .Append(ml.Clustering.Trainers.KMeans("Features"))
+                .Append(ml.Transforms.Concatenate("Features", "Features", "Score"))
+                .Append(ml.BinaryClassification.Trainers.LbfgsLogisticRegression(
+                    new LbfgsLogisticRegressionBinaryTrainer.Options { EnforceNonNegativity = true, OptimizationTolerance = 1e-3f, }));
 
-                trans = NormalizeTransform.CreateMinMaxNormalizer(env, trans, "NumFeatures");
-                trans = new ConcatTransform(env, "Features", "NumFeatures", "CatFeatures").Transform(trans);
-                trans = TrainAndScoreTransform.Create(env, new TrainAndScoreTransform.Arguments
-                {
-                    Trainer = ComponentFactoryUtils.CreateFromFunction(host =>
-                        new KMeansPlusPlusTrainer(host, "Features", advancedSettings: s=> 
-                        {
-                            s.K = 100;
-                        })),
-                    FeatureColumn = "Features"
-                }, trans);
-                trans = new ConcatTransform(env, "Features", "Features", "Score").Transform(trans);
-
-                // Train
-                var trainer = new LogisticRegression(env, "Features", "Label", advancedSettings: args => { args.EnforceNonNegativity = true; args.OptTol = 1e-3f; });
-                var trainRoles = new RoleMappedData(trans, label: "Label", feature: "Features");
-                return trainer.Train(trainRoles);
-            }
+            var model = estimatorPipeline.Fit(input);
+            // Return the last model in the chain.
+            return model.LastTransformer.Model;
         }
     }
 }

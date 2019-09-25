@@ -5,21 +5,22 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using Microsoft.ML;
+using Microsoft.ML.Command;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Data;
+using Microsoft.ML.Internal.Utilities;
+using Microsoft.ML.Model.Pfa;
 using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.Command;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Runtime.Model.Pfa;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
 [assembly: LoadableClass(SavePfaCommand.Summary, typeof(SavePfaCommand), typeof(SavePfaCommand.Arguments), typeof(SignatureCommand),
     "Save PFA", "SavePfa", DocName = "command/SavePfa.md")]
 
-namespace Microsoft.ML.Runtime.Model.Pfa
+namespace Microsoft.ML.Model.Pfa
 {
-    public sealed class SavePfaCommand : DataCommand.ImplBase<SavePfaCommand.Arguments>
+    internal sealed class SavePfaCommand : DataCommand.ImplBase<SavePfaCommand.Arguments>
     {
         public const string Summary = "Given a data model, write out the corresponding PFA.";
         public const string LoadName = "SavePfa";
@@ -94,14 +95,13 @@ namespace Microsoft.ML.Runtime.Model.Pfa
             using (var ch = Host.Start("Run"))
             {
                 Run(ch);
-                ch.Done();
             }
         }
 
         private void GetPipe(IChannel ch, IDataView end, out IDataView source, out IDataView trueEnd, out LinkedList<ITransformCanSavePfa> transforms)
         {
             Host.AssertValue(end);
-            source = trueEnd = (end as CompositeDataLoader)?.View ?? end;
+            source = trueEnd = (end as LegacyCompositeDataLoader)?.View ?? end;
             IDataTransform transform = source as IDataTransform;
             transforms = new LinkedList<ITransformCanSavePfa>();
             while (transform != null)
@@ -120,17 +120,17 @@ namespace Microsoft.ML.Runtime.Model.Pfa
 
         private void Run(IChannel ch)
         {
-            IDataLoader loader;
+            ILegacyDataLoader loader;
             IPredictor rawPred;
             RoleMappedSchema trainSchema;
 
-            if (string.IsNullOrEmpty(Args.InputModelFile))
+            if (string.IsNullOrEmpty(ImplOptions.InputModelFile))
             {
                 loader = CreateLoader();
                 rawPred = null;
                 trainSchema = null;
-                Host.CheckUserArg(Args.LoadPredictor != true, nameof(Args.LoadPredictor),
-                    "Cannot be set to true unless " + nameof(Args.InputModelFile) + " is also specifified.");
+                Host.CheckUserArg(ImplOptions.LoadPredictor != true, nameof(ImplOptions.LoadPredictor),
+                    "Cannot be set to true unless " + nameof(ImplOptions.InputModelFile) + " is also specifified.");
             }
             else
                 LoadModelObjects(ch, _loadPredictor, out rawPred, true, out trainSchema, out loader);
@@ -185,11 +185,11 @@ namespace Microsoft.ML.Runtime.Model.Pfa
             }
 
             var toExport = new List<string>();
-            for (int i = 0; i < end.Schema.ColumnCount; ++i)
+            for (int i = 0; i < end.Schema.Count; ++i)
             {
-                if (end.Schema.IsHidden(i))
+                if (end.Schema[i].IsHidden)
                     continue;
-                var name = end.Schema.GetColumnName(i);
+                var name = end.Schema[i].Name;
                 if (_outputsToDrop.Contains(name))
                     continue;
                 if (!ctx.IsInput(name) || _keepInput)
@@ -209,11 +209,11 @@ namespace Microsoft.ML.Runtime.Model.Pfa
                     writer.Write(pfaDoc.ToString(_formatting));
             }
 
-            if (!string.IsNullOrWhiteSpace(Args.OutputModelFile))
+            if (!string.IsNullOrWhiteSpace(ImplOptions.OutputModelFile))
             {
                 ch.Trace("Saving the data pipe");
                 // Should probably include "end"?
-                SaveLoader(loader, Args.OutputModelFile);
+                SaveLoader(loader, ImplOptions.OutputModelFile);
             }
         }
     }

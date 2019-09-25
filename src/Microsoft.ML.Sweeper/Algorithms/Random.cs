@@ -3,28 +3,29 @@
 // See the LICENSE file in the project root for more information.
 
 using System.Linq;
+using Microsoft.ML;
 using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.Sweeper;
+using Microsoft.ML.Sweeper;
 
-[assembly: LoadableClass(typeof(UniformRandomSweeper), typeof(SweeperBase.ArgumentsBase), typeof(SignatureSweeper),
+[assembly: LoadableClass(typeof(UniformRandomSweeper), typeof(SweeperBase.OptionsBase), typeof(SignatureSweeper),
     "Uniform Random Sweeper", "UniformRandomSweeper", "UniformRandom")]
-[assembly: LoadableClass(typeof(UniformRandomSweeper), typeof(SweeperBase.ArgumentsBase), typeof(SignatureSweeperFromParameterList),
+[assembly: LoadableClass(typeof(UniformRandomSweeper), typeof(SweeperBase.OptionsBase), typeof(SignatureSweeperFromParameterList),
     "Uniform Random Sweeper", "UniformRandomSweeperParamList", "UniformRandompl")]
 
-namespace Microsoft.ML.Runtime.Sweeper
+namespace Microsoft.ML.Sweeper
 {
     /// <summary>
     /// Random sweeper, it generates random values for each of the parameters.
     /// </summary>
     public sealed class UniformRandomSweeper : SweeperBase
     {
-        public UniformRandomSweeper(IHostEnvironment env, ArgumentsBase args)
-            : base(args, env, "UniformRandom")
+        public UniformRandomSweeper(IHostEnvironment env, OptionsBase options)
+            : base(options, env, "UniformRandom")
         {
         }
 
-        public UniformRandomSweeper(IHostEnvironment env, ArgumentsBase args, IValueGenerator[] sweepParameters)
-            : base(args, env, sweepParameters, "UniformRandom")
+        public UniformRandomSweeper(IHostEnvironment env, OptionsBase options, IValueGenerator[] sweepParameters)
+            : base(options, env, sweepParameters, "UniformRandom")
         {
         }
 

@@ -2,19 +2,17 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Microsoft.ML.Ensemble.EntryPoints;
+using Microsoft.ML.EntryPoints;
 using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.Ensemble.Selector;
-using Microsoft.ML.Runtime.Ensemble.Selector.FeatureSelector;
-using Microsoft.ML.Runtime.EntryPoints;
+using Microsoft.ML.Trainers.Ensemble;
 
 [assembly: EntryPointModule(typeof(AllFeatureSelectorFactory))]
 [assembly: EntryPointModule(typeof(RandomFeatureSelector))]
 
-namespace Microsoft.ML.Ensemble.EntryPoints
+namespace Microsoft.ML.Trainers.Ensemble
 {
     [TlcModule.Component(Name = AllFeatureSelector.LoadName, FriendlyName = AllFeatureSelector.UserName)]
-    public sealed class AllFeatureSelectorFactory : ISupportFeatureSelectorFactory
+    internal sealed class AllFeatureSelectorFactory : ISupportFeatureSelectorFactory
     {
         IFeatureSelector IComponentFactory<IFeatureSelector>.CreateComponent(IHostEnvironment env) => new AllFeatureSelector(env);
     }

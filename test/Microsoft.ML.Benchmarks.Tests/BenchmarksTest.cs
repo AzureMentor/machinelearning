@@ -2,14 +2,15 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using BenchmarkDotNet.Attributes;
+using System;
+using System.Linq;
+using System.Reflection;
 using BenchmarkDotNet.Configs;
 using BenchmarkDotNet.Jobs;
 using BenchmarkDotNet.Loggers;
 using BenchmarkDotNet.Running;
-using Microsoft.ML.Runtime.Internal.CpuMath;
-using System;
-using System.Linq;
+using Microsoft.ML.Benchmarks.Harness;
+using Microsoft.ML.TestFramework.Attributes;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -20,29 +21,33 @@ namespace Microsoft.ML.Benchmarks.Tests
         protected override Job GetJobDefinition() => Job.Dry; // Job.Dry runs the benchmark just once
     }
 
-    public class BenchmarkTouchingNativeDependency
-    {
-        [Benchmark]
-        public float Simple() => CpuMathUtils.Sum(Enumerable.Range(0, 1024).Select(Convert.ToSingle).ToArray(), 1024);
-    }
-
     public class BenchmarksTest
     {
-        private const string SkipTheDebug =
-#if DEBUG
-            "BenchmarkDotNet does not allow running the benchmarks in Debug, so this test is disabled for DEBUG";
-#else
-            "";
-#endif
-
         public BenchmarksTest(ITestOutputHelper output) => Output = output;
 
         private ITestOutputHelper Output { get; }
 
-        [Fact(Skip = SkipTheDebug)]
-        public void BenchmarksProjectIsNotBroken()
+        public static TheoryData<Type> GetBenchmarks()
         {
-            var summary = BenchmarkRunner.Run<BenchmarkTouchingNativeDependency>(new TestConfig().With(new OutputLogger(Output)));
+            TheoryData<Type> benchmarks = new TheoryData<Type>();
+            Assembly asm = typeof(StochasticDualCoordinateAscentClassifierBench).Assembly;
+
+            var types = from type in asm.GetTypes()
+                        where Attribute.IsDefined(type, typeof(CIBenchmark))
+                        select type;
+
+            foreach (Type type in types)
+            {
+                benchmarks.Add(type);
+            }
+            return benchmarks;
+        }
+
+        [BenchmarkTheory]
+        [MemberData(nameof(GetBenchmarks))]
+        public void BenchmarksProjectIsNotBroken(Type type)
+        {
+            var summary = BenchmarkRunner.Run(type, new TestConfig().With(new OutputLogger(Output)));
 
             Assert.False(summary.HasCriticalValidationErrors, "The \"Summary\" should have NOT \"HasCriticalValidationErrors\"");
 

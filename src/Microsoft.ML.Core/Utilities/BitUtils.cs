@@ -2,12 +2,12 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using System;
 using System.Runtime.CompilerServices;
+using Microsoft.ML.Runtime;
 
-namespace Microsoft.ML.Runtime.Internal.Utilities
+namespace Microsoft.ML.Internal.Utilities
 {
-    public static partial class Utils
+    internal static partial class Utils
     {
         private const int CbitUint = 32;
         private const int CbitUlong = 64;
@@ -22,10 +22,7 @@ namespace Microsoft.ML.Runtime.Internal.Utilities
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static uint GetLo(ulong uu)
         {
-            // REVIEW: Work around Dev10 Bug 884217: JIT64  -Silent bad codegen for accessing 4-byte parts of 8-byte locals
-            // http://vstfdevdiv:8080/WorkItemTracking/WorkItem.aspx?artifactMoniker=884217
-            // return (uint)uu;
-            return (uint)(uu & 0xFFFFFFFF);
+            return (uint)uu;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

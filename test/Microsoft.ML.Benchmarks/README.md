@@ -4,7 +4,11 @@ This project contains performance benchmarks.
 
 ## Run the Performance Tests
 
-**Pre-requisite:** On a clean repo, `build.cmd` at the root installs the right version of dotnet.exe and builds the solution. You need to build the solution in `Release` with native dependencies. 
+**Pre-requisite:** In order to fetch dependencies which come through Git submodules the following command needs to be run before building:
+
+    git submodule update --init
+
+**Pre-requisite:** On a clean repo with initalized submodules, `build.cmd` at the root installs the right version of dotnet.exe and builds the solution. You need to build the solution in `Release` with native dependencies. 
 
     build.cmd -release -buildNative
     
@@ -43,6 +47,21 @@ To get the total number of allocated managed memory please pass additional conso
     dotnet run -c Release -- --help
 ```
 
+## .NET Core 3.0
+
+**Pre-requisite:** Follow the [netcoreapp3.0 instructions](../../docs/building/netcoreapp3.0-instructions.md).
+
+**Pre-requisite:** To use dotnet cli from the root directory remember to set `DOTNET_MULTILEVEL_LOOKUP` environment variable to `0`!
+
+    $env:DOTNET_MULTILEVEL_LOOKUP=0
+
+1. Navigate to the benchmarks directory (machinelearning\test\Microsoft.ML.Benchmarks)
+
+2. Run the benchmarks in `Release-netcoreapp3_0` configuration, choose one of the benchmarks when prompted
+
+```log
+    ..\..\Tools\dotnetcli\dotnet.exe run -c Release-netcoreapp3_0
+```
 ## Authoring new benchmarks
 
 1. The type which contains benchmark(s) has to be a public, non-sealed, non-static class.
@@ -65,3 +84,24 @@ public class NonTrainingBenchmark
 [Config(typeof(TrainConfig))]
 public class TrainingBenchmark
 ```
+## Running the `BenchmarksProjectIsNotBroken`  test
+
+If your build is failing in the build machines, in the release configuraiton due to the `BenchmarksProjectIsNotBroken` test failing, 
+you can debug this test locally by:
+
+1- Building the solution in the release mode locally
+
+build.cmd -release -buildNative
+
+2- Changing the configuration in Visual Studio from Debug -> Release
+3- Changing the annotation in the `BenchmarksProjectIsNotBroken` to replace `BenchmarkTheory` with `Theory`, as below. 
+
+```cs
+[Theory]
+[MemberData(nameof(GetBenchmarks))]
+public void BenchmarksProjectIsNotBroken(Type type)
+
+```
+
+4- Restart Visual Studio
+5- Proceed to running the tests normally from the Test Explorer view. 

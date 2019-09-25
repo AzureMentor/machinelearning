@@ -2,12 +2,11 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Microsoft.ML.Runtime.Api;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Learners;
-using Microsoft.ML.Runtime.RunTests;
-using Microsoft.ML.TestFramework;
 using System.Linq;
+using Microsoft.ML.Data;
+using Microsoft.ML.RunTests;
+using Microsoft.ML.Trainers;
+using Microsoft.ML.Transforms;
 using Xunit;
 
 namespace Microsoft.ML.Tests.Scenarios.Api
@@ -23,30 +22,28 @@ namespace Microsoft.ML.Tests.Scenarios.Api
         /// say, injecting a dummy label.
         /// </summary>
         [Fact]
-        void New_DecomposableTrainAndPredict()
+        void DecomposableTrainAndPredict()
         {
             var dataPath = GetDataPath(TestDatasets.irisData.trainFilename);
-            using (var env = new LocalEnvironment()
-                .AddStandardComponents()) // ScoreUtils.GetScorer requires scorers to be registered in the ComponentCatalog
+            var ml = new MLContext();
+
+            var data = ml.Data.LoadFromTextFile<IrisData>(dataPath, separatorChar: ',');
+
+            var pipeline = new ColumnConcatenatingEstimator (ml, "Features", "SepalLength", "SepalWidth", "PetalLength", "PetalWidth")
+                .Append(new ValueToKeyMappingEstimator(ml, "Label"), TransformerScope.TrainTest)
+                .Append(ml.MulticlassClassification.Trainers.SdcaMaximumEntropy(
+                    new SdcaMaximumEntropyMulticlassTrainer.Options { MaximumNumberOfIterations = 100, Shuffle = true, NumberOfThreads = 1, }))
+                .Append(new KeyToValueMappingEstimator(ml, "PredictedLabel"));
+
+            var model = pipeline.Fit(data).GetModelFor(TransformerScope.Scoring);
+            var engine = ml.Model.CreatePredictionEngine<IrisDataNoLabel, IrisPrediction>(model);
+
+            var testLoader = ml.Data.LoadFromTextFile(dataPath, TestDatasets.irisData.GetLoaderColumns(), separatorChar: ',', hasHeader: true);
+            var testData = ml.Data.CreateEnumerable<IrisData>(testLoader, false);
+            foreach (var input in testData.Take(20))
             {
-                var data = new TextLoader(env, MakeIrisTextLoaderArgs())
-                    .Read(new MultiFileSource(dataPath));
-
-                var pipeline = new ConcatEstimator(env, "Features", "SepalLength", "SepalWidth", "PetalLength", "PetalWidth")
-                    .Append(new TermEstimator(env, "Label"), TransformerScope.TrainTest)
-                    .Append(new SdcaMultiClassTrainer(env, new SdcaMultiClassTrainer.Arguments { MaxIterations = 100, Shuffle = true, NumThreads = 1 }, "Features", "Label"))
-                    .Append(new KeyToValueEstimator(env, "PredictedLabel"));
-
-                var model = pipeline.Fit(data).GetModelFor(TransformerScope.Scoring);
-                var engine = model.MakePredictionFunction<IrisDataNoLabel, IrisPrediction>(env);
-
-                var testLoader = TextLoader.ReadFile(env, MakeIrisTextLoaderArgs(), new MultiFileSource(dataPath));
-                var testData = testLoader.AsEnumerable<IrisData>(env, false);
-                foreach (var input in testData.Take(20))
-                {
-                    var prediction = engine.Predict(input);
-                    Assert.True(prediction.PredictedLabel == input.Label);
-                }
+                var prediction = engine.Predict(input);
+                Assert.True(prediction.PredictedLabel == input.Label);
             }
         }
     }

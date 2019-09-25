@@ -6,26 +6,26 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using Microsoft.ML;
+using Microsoft.ML.Command;
+using Microsoft.ML.CommandLine;
+using Microsoft.ML.Internal.Utilities;
 using Microsoft.ML.Runtime;
-using Microsoft.ML.Runtime.CommandLine;
-using Microsoft.ML.Runtime.EntryPoints;
-using Microsoft.ML.Runtime.Internal.Utilities;
-using Microsoft.ML.Runtime.Sweeper;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Command;
+using Microsoft.ML.Sweeper;
 
 [assembly: LoadableClass(SweepCommand.Summary, typeof(SweepCommand), typeof(SweepCommand.Arguments), typeof(SignatureCommand),
     SweepCommand.LoadName, SweepCommand.LoadName, DocName = "command/Sweep.md")]
 
-namespace Microsoft.ML.Runtime.Sweeper
+namespace Microsoft.ML.Sweeper
 {
-    public sealed class SweepCommand : ICommand
+    [BestFriend]
+    internal sealed class SweepCommand : ICommand
     {
+#pragma warning disable CS0649 // The fields will still be set via the reflection driven mechanisms.
         public sealed class Arguments
         {
             [Argument(ArgumentType.Multiple, HelpText = "Config runner", ShortName = "run,ev,evaluator", SignatureType = typeof(SignatureConfigRunner))]
             public IComponentFactory<IConfigRunner> Runner = ComponentFactoryUtils.CreateFromFunction(
-                env => new LocalExeConfigRunner(env, new LocalExeConfigRunner.Arguments()));
+                env => new LocalExeConfigRunner(env, new LocalExeConfigRunner.Options()));
 
             [Argument(ArgumentType.Multiple, HelpText = "Sweeper", ShortName = "s", SignatureType = typeof(SignatureSweeper))]
             public IComponentFactory<ISweeper> Sweeper;
@@ -42,6 +42,7 @@ namespace Microsoft.ML.Runtime.Sweeper
             [Argument(ArgumentType.AtMostOnce, HelpText = "Random seed", ShortName = "seed")]
             public int? RandomSeed;
         }
+#pragma warning restore CS0649
 
         internal const string Summary = "Given a command line template and sweep ranges, creates and runs a sweep.";
 
@@ -98,8 +99,6 @@ namespace Microsoft.ML.Runtime.Sweeper
 
                     ch.Info("Outputs of finished runs can be found in the specified output folder");
                     _runner.Finish();
-
-                    ch.Done();
                 }
             }
             catch (Exception e)

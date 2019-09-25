@@ -4,21 +4,19 @@
 
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Linq;
-using System.Net.Sockets;
-using System.Reflection;
 using System.Text;
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Internal.Utilities;
+using Microsoft.ML.Data;
+using Microsoft.ML.Runtime;
 
-namespace Microsoft.ML.Runtime.EntryPoints
+namespace Microsoft.ML.EntryPoints
 {
     /// <summary>
     /// This class defines attributes to annotate module inputs, outputs, entry points etc. when defining
     /// the module interface.
     /// </summary>
-    public static class TlcModule
+    [BestFriend]
+    internal static class TlcModule
     {
         /// <summary>
         /// An attribute used to annotate the component.
@@ -71,7 +69,7 @@ namespace Microsoft.ML.Runtime.EntryPoints
 
             /// <summary>
             /// This should indicate a name of an embedded resource that contains detailed documents
-            /// for the component, e.g., markdown document with the .md extension. The embedded resource
+            /// for the component, for example, markdown document with the .md extension. The embedded resource
             /// is assumed to be in the same assembly as the class on which this attribute is ascribed.
             /// </summary>
             public string DocName { get; set; }
@@ -527,11 +525,6 @@ namespace Microsoft.ML.Runtime.EntryPoints
             /// Short name of the Entry Point
             /// </summary>
             public string ShortName { get; set; }
-
-            /// <summary>
-            /// The path to the XML documentation on the CSharpAPI component
-            /// </summary>
-            public string[] XmlInclude { get; set; }
         }
 
         /// <summary>
@@ -576,11 +569,11 @@ namespace Microsoft.ML.Runtime.EntryPoints
             /// </summary>
             FileHandle,
             /// <summary>
-            /// A transform model, represented by an <see cref="ITransformModel"/>.
+            /// A transform model, represented by an <see cref="EntryPoints.TransformModel"/>.
             /// </summary>
             TransformModel,
             /// <summary>
-            /// A predictor model, represented by an <see cref="IPredictorModel"/>.
+            /// A predictor model, represented by an <see cref="EntryPoints.PredictorModel"/>.
             /// </summary>
             PredictorModel,
             /// <summary>
@@ -601,11 +594,7 @@ namespace Microsoft.ML.Runtime.EntryPoints
             /// optionally, a set of parameters, unique to each component. Example: "BinaryClassifierEvaluator{threshold=0.5}".
             /// The C# representation is <see cref="IComponentFactory"/>.
             /// </summary>
-            Component,
-            /// <summary>
-            /// An C# object that represents state, such as <see cref="IMlState"/>.
-            /// </summary>
-            State
+            Component
         }
 
         public static DataKind GetDataType(Type type)
@@ -631,9 +620,9 @@ namespace Microsoft.ML.Runtime.EntryPoints
                 return DataKind.Float;
             if (typeof(IDataView).IsAssignableFrom(type))
                 return DataKind.DataView;
-            if (typeof(ITransformModel).IsAssignableFrom(type))
+            if (typeof(TransformModel).IsAssignableFrom(type))
                 return DataKind.TransformModel;
-            if (typeof(IPredictorModel).IsAssignableFrom(type))
+            if (typeof(PredictorModel).IsAssignableFrom(type))
                 return DataKind.PredictorModel;
             if (typeof(IFileHandle).IsAssignableFrom(type))
                 return DataKind.FileHandle;
@@ -648,8 +637,6 @@ namespace Microsoft.ML.Runtime.EntryPoints
             }
             if (typeof(IComponentFactory).IsAssignableFrom(type))
                 return DataKind.Component;
-            if (typeof(IMlState).IsAssignableFrom(type))
-                return DataKind.State;
 
             return DataKind.Unknown;
         }
@@ -663,7 +650,8 @@ namespace Microsoft.ML.Runtime.EntryPoints
     /// <summary>
     /// The untyped base class for 'maybe'.
     /// </summary>
-    public abstract class Optional
+    [BestFriend]
+    internal abstract class Optional
     {
         /// <summary>
         /// Whether the value was set 'explicitly', or 'implicitly'.
@@ -672,7 +660,7 @@ namespace Microsoft.ML.Runtime.EntryPoints
 
         public abstract object GetValue();
 
-        protected Optional(bool isExplicit)
+        private protected Optional(bool isExplicit)
         {
             IsExplicit = isExplicit;
         }
@@ -687,7 +675,8 @@ namespace Microsoft.ML.Runtime.EntryPoints
     /// the weight column to be 'Weight', we need to actually enforce the presence of the column.
     /// </summary>
     /// <typeparam name="T">The type of the value</typeparam>
-    public sealed class Optional<T> : Optional
+    [BestFriend]
+    internal sealed class Optional<T> : Optional
     {
         public readonly T Value;
 

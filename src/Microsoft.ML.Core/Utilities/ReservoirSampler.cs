@@ -2,18 +2,19 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
+using System;
 using System.Collections.Generic;
 using System.Linq;
-using Microsoft.ML.Runtime.Data;
-
-namespace Microsoft.ML.Runtime.Internal.Utilities
+using Microsoft.ML.Runtime;
+namespace Microsoft.ML.Internal.Utilities
 {
     /// <summary>
     /// This is an interface for creating samples of a requested size from a stream of data of type <typeparamref name="T"/>.
     /// The sample is created in one pass by calling <see cref="Sample"/> for every data point in the stream. Implementations should have
     /// a delegate for getting the next data point, which is invoked if the current data point should go into the reservoir.
     /// </summary>
-    public interface IReservoirSampler<T>
+    [BestFriend]
+    internal interface IReservoirSampler<T>
     {
         /// <summary>
         /// If the number of elements sampled is less than the reservoir size, this should return the number of elements sampled.
@@ -49,12 +50,13 @@ namespace Microsoft.ML.Runtime.Internal.Utilities
     /// for every data point in the stream. In case the next data point does not get 'picked' into the reservoir, the delegate is not invoked.
     /// Sampling is done according to the algorithm in this paper: <a href="https://epubs.siam.org/doi/pdf/10.1137/1.9781611972740.53">https://epubs.siam.org/doi/pdf/10.1137/1.9781611972740.53</a>.
     /// </summary>
-    public sealed class ReservoirSamplerWithoutReplacement<T> : IReservoirSampler<T>
+    [BestFriend]
+    internal sealed class ReservoirSamplerWithoutReplacement<T> : IReservoirSampler<T>
     {
         // This array contains a cache of the elements composing the reservoir.
         private readonly T[] _cache;
 
-        private readonly IRandom _rnd;
+        private readonly Random _rnd;
 
         private long _numSampled;
         private readonly ValueGetter<T> _getter;
@@ -65,7 +67,7 @@ namespace Microsoft.ML.Runtime.Internal.Utilities
 
         public long NumSampled { get { return _numSampled; } }
 
-        public ReservoirSamplerWithoutReplacement(IRandom rnd, int size, ValueGetter<T> getter)
+        public ReservoirSamplerWithoutReplacement(Random rnd, int size, ValueGetter<T> getter)
         {
             Contracts.CheckValue(rnd, nameof(rnd));
             Contracts.CheckParam(size > 0, nameof(size), "Reservoir size must be positive");
@@ -122,7 +124,8 @@ namespace Microsoft.ML.Runtime.Internal.Utilities
     /// for every data point in the stream. In case the next data point does not get 'picked' into the reservoir, the delegate is not invoked.
     /// Sampling is done according to the algorithm in this paper: <a href="https://epubs.siam.org/doi/pdf/10.1137/1.9781611972740.53">https://epubs.siam.org/doi/pdf/10.1137/1.9781611972740.53</a>.
     /// </summary>
-    public sealed class ReservoirSamplerWithReplacement<T> : IReservoirSampler<T>
+    [BestFriend]
+    internal sealed class ReservoirSamplerWithReplacement<T> : IReservoirSampler<T>
     {
         // This array contains pointers to the elements in the _cache array that are currently in the reservoir (may contain duplicates).
         private readonly int[] _reservoir;
@@ -132,7 +135,7 @@ namespace Microsoft.ML.Runtime.Internal.Utilities
         private readonly T[] _cache;
         private readonly int[] _counts;
 
-        private readonly IRandom _rnd;
+        private readonly Random _rnd;
 
         private long _numSampled;
         private readonly ValueGetter<T> _getter;
@@ -143,7 +146,7 @@ namespace Microsoft.ML.Runtime.Internal.Utilities
 
         public long NumSampled { get { return _numSampled; } }
 
-        public ReservoirSamplerWithReplacement(IRandom rnd, int size, ValueGetter<T> getter)
+        public ReservoirSamplerWithReplacement(Random rnd, int size, ValueGetter<T> getter)
         {
             Contracts.CheckValue(rnd, nameof(rnd));
             Contracts.CheckParam(size > 0, nameof(size), "Reservoir size must be positive");
@@ -199,7 +202,7 @@ namespace Microsoft.ML.Runtime.Internal.Utilities
                         _counts[_reservoir[ind]]++;
                     _getter(ref _cache[_reservoir[ind]]);
 
-                    for (int j = 1; j < k; )
+                    for (int j = 1; j < k;)
                     {
                         var next = _rnd.Next(_reservoir.Length);
                         if (_reservoir[next] == _reservoir[ind])

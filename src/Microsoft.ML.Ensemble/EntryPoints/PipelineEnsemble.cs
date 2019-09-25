@@ -2,16 +2,17 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using Microsoft.ML.Runtime.Data;
-using Microsoft.ML.Runtime.Ensemble.EntryPoints;
-using Microsoft.ML.Runtime.EntryPoints;
-using Microsoft.ML.Runtime.Internal.Calibration;
+using Microsoft.ML.Calibrators;
+using Microsoft.ML.Data;
+using Microsoft.ML.EntryPoints;
+using Microsoft.ML.Runtime;
+using Microsoft.ML.Trainers.Ensemble;
 
 [assembly: EntryPointModule(typeof(PipelineEnsemble))]
 
-namespace Microsoft.ML.Runtime.Ensemble.EntryPoints
+namespace Microsoft.ML.Trainers.Ensemble
 {
-    public static class PipelineEnsemble
+    internal static class PipelineEnsemble
     {
         public sealed class SummaryOutput
         {
@@ -32,14 +33,13 @@ namespace Microsoft.ML.Runtime.Ensemble.EntryPoints
 
             input.PredictorModel.PrepareData(host,
                 new EmptyDataView(host, input.PredictorModel.TransformModel.InputSchema),
-                out RoleMappedData rmd, out IPredictor predictor
-);
+                out RoleMappedData rmd, out IPredictor predictor);
 
-            var calibrated = predictor as CalibratedPredictorBase;
+            var calibrated = predictor as IWeaklyTypedCalibratedModelParameters;
             while (calibrated != null)
             {
-                predictor = calibrated.SubPredictor;
-                calibrated = predictor as CalibratedPredictorBase;
+                predictor = calibrated.WeaklyTypedSubModel;
+                calibrated = predictor as IWeaklyTypedCalibratedModelParameters;
             }
             var ensemble = predictor as SchemaBindablePipelineEnsembleBase;
             host.CheckUserArg(ensemble != null, nameof(input.PredictorModel.Predictor), "Predictor is not a pipeline ensemble predictor");

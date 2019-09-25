@@ -4,13 +4,12 @@
 
 using System;
 using System.Collections.Generic;
-using Float = System.Single;
+using Microsoft.ML.Internal.CpuMath.Core;
 
-namespace Microsoft.ML.Runtime.Internal.CpuMath
+namespace Microsoft.ML.Internal.CpuMath
 {
-    using Conditional = System.Diagnostics.ConditionalAttribute;
-
-    public interface ICpuBuffer<T> : IEnumerable<T>, IDisposable
+    [BestFriend]
+    internal interface ICpuBuffer<T> : IEnumerable<T>, IDisposable
         where T : struct
     {
         int ValueCount { get; }
@@ -39,7 +38,8 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
     /// <summary>
     /// A logical math vector.
     /// </summary>
-    public interface ICpuVector : ICpuBuffer<Float>
+    [BestFriend]
+    internal interface ICpuVector : ICpuBuffer<float>
     {
         /// <summary>
         /// The vector size
@@ -49,10 +49,11 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
         /// <summary>
         /// Get the i'th component of the vector.
         /// </summary>
-        Float GetValue(int i);
+        float GetValue(int i);
     }
 
-    public interface ICpuMatrix : ICpuBuffer<Float>
+    [BestFriend]
+    internal interface ICpuMatrix : ICpuBuffer<float>
     {
         /// <summary>
         /// The row count
@@ -68,12 +69,13 @@ namespace Microsoft.ML.Runtime.Internal.CpuMath
     /// <summary>
     /// A 2-dimensional matrix.
     /// </summary>
-    public interface ICpuFullMatrix : ICpuMatrix
+    [BestFriend]
+    internal interface ICpuFullMatrix : ICpuMatrix
     {
         /// <summary>
         /// Copy the values for the given row into dst, starting at slot ivDst.
         /// </summary>
-        void CopyTo(int row, Float[] dst, ref int ivDst);
+        void CopyTo(int row, float[] dst, ref int ivDst);
 
         /// <summary>
         /// Zero out the items with the given indices.
